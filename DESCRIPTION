@@ -1,0 +1,25 @@
+Package: multiomeKO
+Type: Package
+Title: Interpretable Two-Stage Virtual KO for Paired scRNA+scATAC (Multiome)
+Version: 0.5.0
+Authors@R: c(
+  person(given = "OpenAI", family = "Assistant", role = c("aut", "cre"), email = "noreply@example.com")
+)
+Description: Implements a biologically constrained two-stage model (Regulator->ATAC->RNA)
+    for paired single-cell multiome (scRNA+scATAC) data represented as Seurat/Signac objects.
+    Supports virtual knock-out (counterfactual) prediction producing delta-ATAC and delta-RNA,
+    adaptive penalties from motif/link/distance/GWAS fine-mapping, and metacell pseudobulk.
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Imports:
+    Matrix,
+    glmnet,
+    Seurat,
+    Signac,
+    GenomicRanges,
+    IRanges,
+    GenomeInfoDb
+Suggests:
+    rtracklayer
+RoxygenNote: 7.3.2
