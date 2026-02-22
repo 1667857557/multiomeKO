@@ -131,6 +131,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
   C <- TAX$covariates
   Xm <- t(T)
   Cm <- if (!is.null(C)) t(C) else NULL
+  cov_names <- if (!is.null(C)) rownames(C) else character()
   off <- TAX$offsets$atac
 
   mm <- motif_map$motif_mat
@@ -197,6 +198,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
     } else if (x$status == "few_regs") {
       skipped_few_regs <- skipped_few_regs + 1L
     }
+    fitted_peaks <- fitted_peaks + 1L
   }
 
   list(
@@ -238,6 +240,7 @@ fit_stage2_A_to_X <- function(
   Xm_T <- t(T)
   C <- TAX$covariates
   Cm <- if (!is.null(C)) t(C) else NULL
+  cov_names <- if (!is.null(C)) rownames(C) else character()
 
   genes <- intersect(genes, rownames(TAX$X_counts))
   if (length(genes) == 0) stop("No genes to fit in stage2")
