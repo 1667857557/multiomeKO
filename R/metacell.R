@@ -16,6 +16,8 @@
 #' @return A factor vector of metacell ids aligned to cells (colnames(obj)).
 make_metacell_ids <- function(obj, group.by, n_cells = 50, min_cells = 25, min_tail_cells = max(5, floor(n_cells / 2)), seed = 1) {
   md <- obj@meta.data
+  cells <- colnames(obj)
+  md <- md[cells, , drop = FALSE]
   if (!all(group.by %in% colnames(md))) {
     stop("group.by columns not found in obj@meta.data: ", paste(setdiff(group.by, colnames(md)), collapse=", "))
   }
