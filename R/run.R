@@ -16,11 +16,13 @@
 #' @param tf_mode RNA/chromvar/both
 #' @param tf_genes TF genes if needed
 #' @param include_T_direct include direct regulator terms in stage2 (default FALSE)
+#' @param ko_value KO value (used by predict_virtual_ko)
+#' @param ko_mode KO mode: 'set' or 'scale'
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
 #' @param lambda_A,lambda_X optional; if NULL estimated on subset
 #' @param seed random seed
-#' @return list(setup, fits, pred, rank_genes, rank_peaks)
+#' @return list(setup, fits, diagnostics, pred, rank_genes, rank_peaks)
 run_virtual_ko_optimized <- function(
   obj,
   ko_regulator,
@@ -30,6 +32,8 @@ run_virtual_ko_optimized <- function(
   tf_mode = c("RNA", "chromvar", "both"),
   tf_genes = NULL,
   include_T_direct = FALSE,
+  ko_value = 0,
+  ko_mode = c("set", "scale"),
   finemap_snps = NULL,
   pip_floor = 0,
   lambda_A = NULL,
@@ -39,6 +43,7 @@ run_virtual_ko_optimized <- function(
   atac_assay = "ATAC"
 ) {
   tf_mode <- match.arg(tf_mode)
+  ko_mode <- match.arg(ko_mode)
 
   # ---- priors: peak2gene ----
   p2g <- get_peak2gene_links(obj, atac_assay = atac_assay)
@@ -71,7 +76,17 @@ run_virtual_ko_optimized <- function(
   # ---- metacells ----
   mc <- make_metacell_ids(obj, group.by = group.by, n_cells = n_cells, seed = seed)
 
+  # ---- motif map for stage1 ----
+  motif_map <- get_peak_motif_map(obj, atac_assay = atac_assay)
+
   # ---- extract shared T/A/X ----
+  if (tf_mode %in% c("RNA", "both") && is.null(tf_genes)) {
+    rna_genes <- rownames(Seurat::GetAssayData(obj, assay = rna_assay, slot = "counts"))
+    tf_from_motif <- intersect(unique(motif_map$tf_symbols), rna_genes)
+    tf_genes <- unique(c(tf_from_motif, genes_use))
+    warning("tf_genes is NULL; auto-derived RNA regulators from motifs + genes_use")
+  }
+
   TAX <- extract_TAX_metacell(
     obj,
     metacell_ids = mc,
@@ -89,8 +104,6 @@ run_virtual_ko_optimized <- function(
          paste(head(rownames(TAX$T), 10), collapse=", "))
   }
 
-  # ---- motif map for stage1 ----
-  motif_map <- get_peak_motif_map(obj, atac_assay = atac_assay)
 
   # ---- lambda estimation (optional) ----
   if (is.null(lambda_A)) {
@@ -111,10 +124,27 @@ run_virtual_ko_optimized <- function(
   )
 
   # ---- predict KO ----
-  pred <- predict_virtual_ko(TAX, fit1, fit2, ko_regulators = ko_regulator)
+  pred <- predict_virtual_ko(
+    TAX, fit1, fit2,
+    ko_regulators = ko_regulator,
+    ko_value = ko_value,
+    ko_mode = ko_mode
+  )
 
   rank_genes <- rank_by_effect(pred$dX, top_n = 100)
   rank_peaks <- rank_by_effect(pred$dA, top_n = 100)
+
+  # ---- fit diagnostics warning ----
+  d1 <- fit1$diagnostics
+  d2 <- fit2$diagnostics
+  if (!is.null(d1) && d1$total_peaks > 0) {
+    frac1 <- d1$fitted_peaks / d1$total_peaks
+    if (is.finite(frac1) && frac1 < 0.5) warning(sprintf("Stage1 fitted peak fraction is low: %.2f", frac1))
+  }
+  if (!is.null(d2) && d2$total_genes > 0) {
+    frac2 <- d2$fitted_genes / d2$total_genes
+    if (is.finite(frac2) && frac2 < 0.5) warning(sprintf("Stage2 fitted gene fraction is low: %.2f", frac2))
+  }
 
   list(
     setup = list(
@@ -125,10 +155,13 @@ run_virtual_ko_optimized <- function(
       tf_mode = tf_mode,
       lambda_A = lambda_A,
       lambda_X = lambda_X,
-      ko_regulator = ko_regulator
+      ko_regulator = ko_regulator,
+      ko_value = ko_value,
+      ko_mode = ko_mode
     ),
     gwas = list(snp_peak = snp_peak, peak_weights = peak_w),
     fits = list(stage1 = fit1, stage2 = fit2),
+    diagnostics = list(stage1 = fit1$diagnostics, stage2 = fit2$diagnostics),
     pred = pred,
     rank_genes = rank_genes,
     rank_peaks = rank_peaks

@@ -52,11 +52,14 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
     }
     y <- as.numeric(TAX$A_counts[pk, ])
 
+    nfolds <- .safe_nfolds(nrow(X))
+    if (is.na(nfolds)) next
+
     cv <- glmnet::cv.glmnet(
       x = as.matrix(X), y = y, family = "poisson",
       alpha = alpha, offset = off,
       penalty.factor = pen,
-      nfolds = min(5, nrow(X)),
+      nfolds = nfolds,
       standardize = TRUE
     )
     lambdas <- c(lambdas, cv$lambda.1se)
@@ -93,10 +96,13 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1) 
     X <- t(Afeat[pks, , drop=FALSE])
     y <- as.numeric(TAX$X_counts[g, ])
 
+    nfolds <- .safe_nfolds(nrow(X))
+    if (is.na(nfolds)) next
+
     cv <- glmnet::cv.glmnet(
       x = as.matrix(X), y = y, family = "poisson",
       alpha = 0, offset = off,
-      nfolds = min(5, nrow(X)),
+      nfolds = nfolds,
       standardize = TRUE
     )
     lambdas <- c(lambdas, cv$lambda.1se)
@@ -114,7 +120,7 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1) 
 #' @param motif_map output of get_peak_motif_map
 #' @param peaks peaks to fit
 #' @param lambda global lambda
-#' @return list(W_A, b0_A)
+#' @return list(W_A, b0_A, diagnostics)
 fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
   T <- TAX$T
   C <- TAX$covariates
@@ -132,10 +138,16 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
   W <- Matrix::Matrix(0, nrow = nrow(T), ncol = length(peaks), sparse = TRUE,
                       dimnames = list(rownames(T), peaks))
   b0 <- setNames(rep(0, length(peaks)), peaks)
+  fitted_peaks <- 0L
+  skipped_no_motif <- 0L
+  skipped_few_regs <- 0L
 
   for (pk in peaks) {
     hit <- which(mm[pk, ] > 0)
-    if (length(hit) < 1) next
+    if (length(hit) < 1) {
+      skipped_no_motif <- skipped_no_motif + 1L
+      next
+    }
     motifs <- colnames(mm)[hit]
     tf_sym <- sub(".*_", "", motifs)
 
@@ -144,7 +156,10 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
     regs <- c(regs, intersect(paste0("MOTIF:", motifs), rownames(T)))
     regs <- unique(regs)
 
-    if (length(regs) < 3) next
+    if (length(regs) < 3) {
+      skipped_few_regs <- skipped_few_regs + 1L
+      next
+    }
 
     X <- Xm[, regs, drop=FALSE]
     pen <- rep(1, length(regs))
@@ -163,15 +178,23 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
     )
 
     cf <- glmnet::coef.glmnet(fit)
-    # cf: sparse matrix with rownames (Intercept) + predictors
     b0[pk] <- as.numeric(cf[1, 1])
-    # coefficients for regs (exclude covariates)
     if (length(regs) > 0) {
       W[regs, pk] <- as.numeric(cf[match(regs, rownames(cf)), 1])
     }
+    fitted_peaks <- fitted_peaks + 1L
   }
 
-  list(W_A = W, b0_A = b0)
+  list(
+    W_A = W,
+    b0_A = b0,
+    diagnostics = list(
+      total_peaks = length(peaks),
+      fitted_peaks = fitted_peaks,
+      skipped_no_motif = skipped_no_motif,
+      skipped_few_regs = skipped_few_regs
+    )
+  )
 }
 
 #' Fit stage2: peaks -> gene expression (Poisson ridge) with adaptive penalties
@@ -184,7 +207,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
 #' @param peak_weights optional named numeric GWAS peak weights
 #' @param include_T_direct whether to include direct regulator terms T in stage2
 #' @param motif_map optional motif_map; required if include_T_direct=TRUE
-#' @return list(V, W_X, b0_X)
+#' @return list(V, W_X, b0_X, diagnostics)
 fit_stage2_A_to_X <- function(
   TAX, p2g_df, genes, lambda = 1,
   obj, atac_assay = "ATAC",
@@ -202,7 +225,6 @@ fit_stage2_A_to_X <- function(
   genes <- intersect(genes, rownames(TAX$X_counts))
   if (length(genes) == 0) stop("No genes to fit in stage2")
 
-  # collect all peaks needed
   peaks_all <- unique(p2g_df$peak[p2g_df$gene %in% genes])
   peaks_all <- intersect(peaks_all, rownames(Afeat))
   if (length(peaks_all) == 0) stop("No linked peaks found for genes")
@@ -210,6 +232,8 @@ fit_stage2_A_to_X <- function(
   V <- Matrix::Matrix(0, nrow = length(peaks_all), ncol = length(genes), sparse = TRUE,
                       dimnames = list(peaks_all, genes))
   b0 <- setNames(rep(0, length(genes)), genes)
+  fitted_genes <- 0L
+  skipped_few_peaks <- 0L
 
   Wxt <- NULL
   if (include_T_direct) {
@@ -227,9 +251,12 @@ fit_stage2_A_to_X <- function(
   for (g in genes) {
     pks <- unique(p2g_df$peak[p2g_df$gene == g])
     pks <- intersect(pks, peaks_all)
-    if (length(pks) < 5) next
+    if (length(pks) < 5) {
+      skipped_few_peaks <- skipped_few_peaks + 1L
+      next
+    }
 
-    Xp <- t(Afeat[pks, , drop=FALSE]) # metacells x peaks
+    Xp <- t(Afeat[pks, , drop=FALSE])
     pen_p <- build_stage2_peak_penalty(
       obj = obj, atac_assay = atac_assay,
       gene = g, peaks = pks,
@@ -244,7 +271,6 @@ fit_stage2_A_to_X <- function(
     reg_keep <- character()
 
     if (include_T_direct) {
-      # Candidate regulators: those with motifs present in linked peaks
       hit <- which(Matrix::colSums(mm[pks, , drop=FALSE] > 0) > 0)
       motifs <- colnames(mm)[hit]
       tf_sym <- sub(".*_", "", motifs)
@@ -252,7 +278,6 @@ fit_stage2_A_to_X <- function(
         intersect(paste0("RNA:", tf_sym), rownames(T)),
         intersect(paste0("MOTIF:", motifs), rownames(T))
       ))
-      # keep at most 50 to avoid overfitting
       if (length(reg_keep) > 50) reg_keep <- reg_keep[seq_len(50)]
 
       if (length(reg_keep) > 0) {
@@ -279,15 +304,22 @@ fit_stage2_A_to_X <- function(
 
     cf <- glmnet::coef.glmnet(fit)
     b0[g] <- as.numeric(cf[1, 1])
-
-    # peaks coefficients
     V[pks, g] <- as.numeric(cf[match(colnames(Xp), rownames(cf)), 1])
 
-    # direct regulator coefficients
     if (include_T_direct && length(reg_keep) > 0) {
       Wxt[reg_keep, g] <- as.numeric(cf[match(reg_keep, rownames(cf)), 1])
     }
+    fitted_genes <- fitted_genes + 1L
   }
 
-  list(V = V, W_X = Wxt, b0_X = b0)
+  list(
+    V = V,
+    W_X = Wxt,
+    b0_X = b0,
+    diagnostics = list(
+      total_genes = length(genes),
+      fitted_genes = fitted_genes,
+      skipped_few_peaks = skipped_few_peaks
+    )
+  )
 }
