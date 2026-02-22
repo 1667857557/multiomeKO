@@ -13,7 +13,7 @@ get_peak2gene_links <- function(obj, atac_assay = "ATAC") {
   peak_col <- NULL
   if ("peak" %in% names(df)) peak_col <- "peak"
   if (is.null(peak_col) && "query_region" %in% names(df)) peak_col <- "query_region"
-  if (is.null(peak_col)) peak_col <- names(df)[1]
+  if (is.null(peak_col)) stop("Cannot find peak column in Links data.frame (expected `peak` or `query_region`)")
 
   gene_col <- NULL
   if ("gene" %in% names(df)) gene_col <- "gene"
