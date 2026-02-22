@@ -187,19 +187,18 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
   skipped_no_motif <- 0L
   skipped_few_regs <- 0L
 
-  for (x in res_list) {
-    b0[x$pk] <- x$b0
-    if (x$status == "fit") {
-      if (length(x$regs) > 0) W[x$regs, x$pk] <- x$coefs
-      if (!is.null(Bcov) && length(x$cov_names) > 0) Bcov[x$cov_names, x$pk] <- x$cov_coefs
-      fitted_peaks <- fitted_peaks + 1L
-    } else if (x$status == "no_motif") {
-      skipped_no_motif <- skipped_no_motif + 1L
-    } else if (x$status == "few_regs") {
-      skipped_few_regs <- skipped_few_regs + 1L
-    }
+for (x in res_list) {
+  b0[x$pk] <- x$b0
+  if (x$status == "fit") {
+    if (length(x$regs) > 0) W[x$regs, x$pk] <- x$coefs
+    if (!is.null(Bcov) && length(x$cov_names) > 0) Bcov[x$cov_names, x$pk] <- x$cov_coefs
     fitted_peaks <- fitted_peaks + 1L
+  } else if (x$status == "no_motif") {
+    skipped_no_motif <- skipped_no_motif + 1L
+  } else if (x$status == "few_regs") {
+    skipped_few_regs <- skipped_few_regs + 1L
   }
+}
 
   list(
     W_A = W,
