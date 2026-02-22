@@ -72,6 +72,7 @@ EOF
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
 #' @param lambda_A,lambda_X optional; if NULL estimated on subset
+#' @param n_cores number of CPU cores for parallel computation
 #' @param seed random seed
 #' @return list(setup, fits, diagnostics, pred, rank_genes, rank_peaks)
 run_virtual_ko_optimized <- function(
@@ -89,6 +90,7 @@ run_virtual_ko_optimized <- function(
   pip_floor = 0,
   lambda_A = NULL,
   lambda_X = NULL,
+  n_cores = 1,
   seed = 1,
   rna_assay = "RNA",
   atac_assay = "ATAC"
@@ -158,20 +160,21 @@ run_virtual_ko_optimized <- function(
 
   # ---- lambda estimation (optional) ----
   if (is.null(lambda_A)) {
-    lambda_A <- estimate_lambda_stage1(TAX, motif_map, peaks = peaks_use, seed = seed)
+    lambda_A <- estimate_lambda_stage1(TAX, motif_map, peaks = peaks_use, seed = seed, n_cores = n_cores)
   }
   if (is.null(lambda_X)) {
-    lambda_X <- estimate_lambda_stage2(TAX, p2g_df = p2g, genes = genes_use, seed = seed)
+    lambda_X <- estimate_lambda_stage2(TAX, p2g_df = p2g, genes = genes_use, seed = seed, n_cores = n_cores)
   }
 
   # ---- fit models ----
-  fit1 <- fit_stage1_T_to_A(TAX, motif_map, peaks = peaks_use, lambda = lambda_A)
+  fit1 <- fit_stage1_T_to_A(TAX, motif_map, peaks = peaks_use, lambda = lambda_A, n_cores = n_cores)
   fit2 <- fit_stage2_A_to_X(
     TAX, p2g_df = p2g, genes = genes_use, lambda = lambda_X,
     obj = obj, atac_assay = atac_assay,
     peak_weights = peak_w,
     include_T_direct = include_T_direct,
-    motif_map = motif_map
+    motif_map = motif_map,
+    n_cores = n_cores
   )
 
   # ---- predict KO ----
@@ -206,6 +209,7 @@ run_virtual_ko_optimized <- function(
       tf_mode = tf_mode,
       lambda_A = lambda_A,
       lambda_X = lambda_X,
+      n_cores = n_cores,
       ko_regulator = ko_regulator,
       ko_value = ko_value,
       ko_mode = ko_mode

@@ -1,124 +1,158 @@
 # multiomeKO
 
-`multiomeKO` is an R package for **interpretable two-stage virtual knock-out (KO)** analysis on paired single-cell multiome data (scRNA + scATAC), using Seurat/Signac objects.
+`multiomeKO` is an R package for **interpretable in-silico knockout (virtual KO)** analysis on paired single-cell multiome data (scRNA + scATAC), designed for Seurat/Signac objects.
 
-## What this package does
+It implements a biologically constrained two-stage model:
 
-The package models regulatory effects in two linked stages:
+1. **Regulator → ATAC peaks** (stage 1)
+2. **ATAC peaks → gene expression** (stage 2)
 
-1. **Stage 1: Regulator -> ATAC peak accessibility**
-   - Fits Poisson ridge models from regulator features (`T`) to peak counts (`A`).
-   - Uses motif-based candidate restriction for biological interpretability.
+Then it applies counterfactual perturbation (KO) to predict downstream changes in accessibility and expression.
 
-2. **Stage 2: ATAC peaks -> Gene expression**
-   - Fits Poisson ridge models from peak features to RNA counts (`X`).
-   - Uses peak-to-gene links (Signac `Links`) and optional adaptive penalties from GWAS fine-mapping, link score, and distance-to-TSS priors.
+---
 
-Then the package performs **virtual KO counterfactual prediction**:
-- Perturb one regulator (e.g. set to zero or scale down),
-- Propagate effect through Stage 1 and Stage 2,
-- Return predicted changes in accessibility (`dA`) and expression (`dX`),
-- Rank peaks/genes by effect size.
+## Key Features
 
-## Main features
+- **End-to-end virtual KO runner** via `run_virtual_ko_optimized()`.
+- **Shared metacell aggregation** for RNA and ATAC to preserve paired structure and improve robustness.
+- **Poisson ridge models with library-size offsets** in both stages.
+- **Biological priors**:
+  - motif-constrained regulator candidates for TF→peak;
+  - Signac `Links()`-based peak→gene constraints.
+- **Optional GWAS fine-mapping integration** (SNP PIP → peak weights).
+- **Adaptive stage-2 penalties** combining GWAS, link score, and distance-to-TSS information.
+- **Counterfactual prediction modes**:
+  - `ko_mode = "set"` (set regulator value to a constant);
+  - `ko_mode = "scale"` (scale regulator by a factor).
+- **Diagnostics in model outputs** to track fitted/skipped peaks/genes.
+- **Cross-platform parallel acceleration** via `n_cores` (Windows and Linux/macOS).
 
-- Shared metacell construction across RNA and ATAC (paired structure preserved)
-- Library-size offsets for count-based models
-- Biologically constrained sparsity (motif prior, peak-to-gene prior)
-- Optional GWAS SNP -> peak weighting
-- End-to-end runner: `run_virtual_ko_optimized()`
-- Feature effect ranking for downstream interpretation
+---
 
-## Core workflow
+## Typical Workflow
 
-Typical high-level pipeline:
+### Inputs
 
-1. Build metacells with `make_metacell_ids()`
-2. Extract matrices with `extract_TAX_metacell()`
-3. Get priors with `get_peak2gene_links()` and `get_peak_motif_map()`
-4. Estimate penalties (`estimate_lambda_stage1/2()`)
-5. Fit two-stage models (`fit_stage1_T_to_A()`, `fit_stage2_A_to_X()`)
-6. Run KO prediction (`predict_virtual_ko()`)
-7. Rank impacts (`rank_by_effect()`)
+A Seurat object with:
 
-Or use the one-shot interface:
-- `run_virtual_ko_optimized()`
+- RNA assay (default: `RNA`)
+- ATAC assay (default: `ATAC`)
+- peak-to-gene links available in `Signac::Links(obj[["ATAC"]])`
+- motif data available for ATAC assay (`Signac::GetMotifData`)
+- optionally chromVAR assay (if `tf_mode` includes `chromvar`)
 
-## Minimal example
-
-> Note: this assumes your Seurat object already contains:
-> - RNA assay (`RNA`),
-> - ATAC assay (`ATAC`),
-> - Signac peak-to-gene links (`Links`),
-> - optionally chromVAR assay if using `tf_mode = "chromvar"` or `"both"`.
+### One-call execution
 
 ```r
 library(multiomeKO)
 
-# obj: Seurat multiome object (RNA + ATAC)
-# genes_use: genes of interest for modeling
-# ko_regulator: regulator name in TAX$T row naming convention
-#   examples: "RNA:FOXA1" or "MOTIF:MA0148.1_FOXA1"
-
 res <- run_virtual_ko_optimized(
-  obj = obj,
-  ko_regulator = "RNA:FOXA1",
+  obj = multiome_obj,
+  ko_regulator = "RNA:FOXA1",              # or e.g. "MOTIF:MA0148.1_FOXA1"
   group.by = c("celltype", "SampleID"),
   n_cells = 50,
-  genes_use = c("FOXA1", "GATA3", "ESR1", "KRT8", "KRT18"),
-  tf_mode = "both",
+  genes_use = c("GATA3", "ESR1", "XBP1", "FOXA1"),
+  tf_mode = "both",                        # "RNA" | "chromvar" | "both"
   tf_genes = c("FOXA1", "GATA3", "ESR1"),
   include_T_direct = FALSE,
   ko_value = 0,
-  ko_mode = "set",   # or "scale"
-  seed = 1,
-  rna_assay = "RNA",
-  atac_assay = "ATAC"
+  ko_mode = "set",                         # or "scale"
+  finemap_snps = NULL,
+  n_cores = 4,
+  seed = 1
 )
 
-# Top predicted affected genes/peaks
+# Top affected genes/peaks
 head(res$rank_genes, 20)
 head(res$rank_peaks, 20)
 
-# Counterfactual delta matrices (features x metacells)
-# Gene expression changes:
-dX <- res$pred$dX
-# Accessibility changes:
-dA <- res$pred$dA
+# Counterfactual deltas on log1p scale
+# rows: features, columns: metacells
+dx <- res$pred$dX
+# stage diagnostics
+res$diagnostics
 ```
 
-## Optional GWAS prior example
+---
+
+## Returned Object (from `run_virtual_ko_optimized`)
+
+A list with major components:
+
+- `setup`: run settings and effective parameters.
+- `gwas`: SNP→peak mapping and peak weights (if provided).
+- `fits`: fitted stage-1 and stage-2 models.
+- `diagnostics`: fit coverage summaries for both stages.
+- `pred`: wild-type and counterfactual expected values (`muA`, `muX`) and deltas (`dA`, `dX`).
+- `rank_genes`, `rank_peaks`: top effects by mean absolute delta.
+
+---
+
+## Step-by-step API Example
+
+If you prefer explicit control over each step:
 
 ```r
-# finemap_snps must provide chr, pos, pip
-# can be path, data.frame, or GRanges
-res_gwas <- run_virtual_ko_optimized(
-  obj = obj,
-  ko_regulator = "RNA:FOXA1",
+library(multiomeKO)
+
+# 1) priors
+p2g <- get_peak2gene_links(multiome_obj, atac_assay = "ATAC")
+motif_map <- get_peak_motif_map(multiome_obj, atac_assay = "ATAC")
+
+# 2) metacells
+mc <- make_metacell_ids(
+  multiome_obj,
   group.by = c("celltype", "SampleID"),
   n_cells = 50,
-  genes_use = genes_use,
-  tf_mode = "both",
-  tf_genes = tf_genes,
-  finemap_snps = snp_df,
-  pip_floor = 0.01
+  seed = 1
 )
+
+# 3) extract shared T/A/X
+TAX <- extract_TAX_metacell(
+  obj = multiome_obj,
+  metacell_ids = mc,
+  rna_assay = "RNA",
+  atac_assay = "ATAC",
+  genes_use = unique(p2g$gene),
+  peaks_use = unique(p2g$peak),
+  tf_mode = "both",
+  tf_genes = c("FOXA1", "GATA3", "ESR1"),
+  covariates = c("nCount_RNA", "nCount_ATAC")
+)
+
+# 4) regularization
+lambda_A <- estimate_lambda_stage1(TAX, motif_map, peaks = unique(p2g$peak), seed = 1, n_cores = 4)
+lambda_X <- estimate_lambda_stage2(TAX, p2g_df = p2g, genes = unique(p2g$gene), seed = 1, n_cores = 4)
+
+# 5) fit models
+fit1 <- fit_stage1_T_to_A(TAX, motif_map, peaks = unique(p2g$peak), lambda = lambda_A, n_cores = 4)
+fit2 <- fit_stage2_A_to_X(
+  TAX, p2g_df = p2g, genes = unique(p2g$gene), lambda = lambda_X,
+  obj = multiome_obj, atac_assay = "ATAC", n_cores = 4
+)
+
+# 6) virtual KO prediction
+pred <- predict_virtual_ko(
+  TAX, fit1, fit2,
+  ko_regulators = "RNA:FOXA1",
+  ko_value = 0,
+  ko_mode = "set"
+)
+
+top_genes <- rank_by_effect(pred$dX, top_n = 50)
 ```
 
-## Output structure (from `run_virtual_ko_optimized`)
+---
 
-- `setup`: run configuration
-- `gwas`: SNP-to-peak mapping and peak weights (if provided)
-- `fits`: stage1/stage2 model objects
-- `diagnostics`: fit coverage diagnostics for stage1/stage2
-- `pred`: wild-type and KO counterfactual predictions (`muA`, `muX`, `dA`, `dX`)
-- `rank_genes`, `rank_peaks`: effect-based rankings
+## Notes and Best Practices
 
-## Function index
+- Ensure `Links()` has been computed (`Signac::LinkPeaks`) before running.
+- Prefer biologically meaningful `genes_use` for targeted modeling.
+- Check `res$diagnostics` to confirm sufficient fitted coverage.
+- Compare results across different metacell seeds/sizes for stability.
 
-- Data prep: `make_metacell_ids()`, `extract_TAX_metacell()`
-- Priors: `get_peak2gene_links()`, `get_peak_motif_map()`
-- GWAS: `read_finemap_snps()`, `snps_to_granges()`, `map_snps_to_peaks()`, `peak_weights_from_snps()`
-- Penalty: `build_stage2_peak_penalty()`, `penalty_from_peak_weights()`
-- Model fit: `estimate_lambda_stage1()`, `estimate_lambda_stage2()`, `fit_stage1_T_to_A()`, `fit_stage2_A_to_X()`
-- Counterfactual: `predict_virtual_ko()`, `rank_by_effect()`, `run_virtual_ko_optimized()`
+---
+
+## Dependencies
+
+Declared imports include `Matrix`, `glmnet`, `Seurat`, `Signac`, `GenomicRanges`, `IRanges`, `GenomeInfoDb`.

@@ -6,8 +6,9 @@
 #' @param peaks vector of peaks to consider
 #' @param n_sample number of peaks to sample
 #' @param alpha ridge=0
+#' @param n_cores number of CPU cores for parallel computation
 #' @return numeric lambda
-estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha = 0, seed = 1) {
+estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha = 0, seed = 1, n_cores = 1) {
   set.seed(seed)
   peaks <- intersect(peaks, rownames(TAX$A_counts))
   if (length(peaks) == 0) stop("No peaks available for lambda estimation")
@@ -24,24 +25,17 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
   if (!all(peaks_s %in% rownames(mm)) && all(peaks_s %in% colnames(mm))) mm <- t(mm)
   mm <- mm[intersect(peaks_s, rownames(mm)), , drop=FALSE]
 
-  lambdas <- c()
-  for (pk in rownames(mm)) {
-    # candidate regulators based on motif hits
+  pk_res <- .parallel_lapply(rownames(mm), function(pk) {
     hit <- which(mm[pk, ] > 0)
-    if (length(hit) < 1) next
+    if (length(hit) < 1) return(NA_real_)
     motifs <- colnames(mm)[hit]
     tf_sym <- sub(".*_", "", motifs)
 
-    regs <- character()
-    # RNA: TF symbols
-    rna_regs <- paste0("RNA:", tf_sym)
-    regs <- c(regs, intersect(rna_regs, rownames(T)))
-    # MOTIF: motif names
-    motif_regs <- paste0("MOTIF:", motifs)
-    regs <- c(regs, intersect(motif_regs, rownames(T)))
-    regs <- unique(regs)
-
-    if (length(regs) < 3) next
+    regs <- unique(c(
+      intersect(paste0("RNA:", tf_sym), rownames(T)),
+      intersect(paste0("MOTIF:", motifs), rownames(T))
+    ))
+    if (length(regs) < 3) return(NA_real_)
 
     X <- Xm[, regs, drop=FALSE]
     if (!is.null(Cm)) {
@@ -53,7 +47,7 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
     y <- as.numeric(TAX$A_counts[pk, ])
 
     nfolds <- .safe_nfolds(nrow(X))
-    if (is.na(nfolds)) next
+    if (is.na(nfolds)) return(NA_real_)
 
     cv <- glmnet::cv.glmnet(
       x = as.matrix(X), y = y, family = "poisson",
@@ -62,8 +56,11 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
       nfolds = nfolds,
       standardize = TRUE
     )
-    lambdas <- c(lambdas, cv$lambda.1se)
-  }
+    as.numeric(cv$lambda.1se)
+  }, n_cores = n_cores)
+
+  lambdas <- unlist(pk_res)
+  lambdas <- lambdas[is.finite(lambdas)]
 
   if (length(lambdas) == 0) {
     warning("Lambda estimation failed; fallback to 1")
@@ -77,8 +74,9 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
 #' @param p2g_df peak2gene links
 #' @param genes vector of genes
 #' @param n_sample number of genes to sample
+#' @param n_cores number of CPU cores for parallel computation
 #' @return numeric lambda
-estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1) {
+estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1, n_cores = 1) {
   set.seed(seed)
   genes <- intersect(genes, rownames(TAX$X_counts))
   if (length(genes) == 0) stop("No genes available for lambda estimation")
@@ -87,17 +85,16 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1) 
   Afeat <- TAX$A_log1p
   off <- TAX$offsets$rna
 
-  lambdas <- c()
-  for (g in genes_s) {
+  g_res <- .parallel_lapply(genes_s, function(g) {
     pks <- unique(p2g_df$peak[p2g_df$gene == g])
     pks <- intersect(pks, rownames(Afeat))
-    if (length(pks) < 5) next
+    if (length(pks) < 5) return(NA_real_)
 
     X <- t(Afeat[pks, , drop=FALSE])
     y <- as.numeric(TAX$X_counts[g, ])
 
     nfolds <- .safe_nfolds(nrow(X))
-    if (is.na(nfolds)) next
+    if (is.na(nfolds)) return(NA_real_)
 
     cv <- glmnet::cv.glmnet(
       x = as.matrix(X), y = y, family = "poisson",
@@ -105,8 +102,11 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1) 
       nfolds = nfolds,
       standardize = TRUE
     )
-    lambdas <- c(lambdas, cv$lambda.1se)
-  }
+    as.numeric(cv$lambda.1se)
+  }, n_cores = n_cores)
+
+  lambdas <- unlist(g_res)
+  lambdas <- lambdas[is.finite(lambdas)]
 
   if (length(lambdas) == 0) {
     warning("Lambda estimation failed; fallback to 1")
@@ -120,8 +120,9 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1) 
 #' @param motif_map output of get_peak_motif_map
 #' @param peaks peaks to fit
 #' @param lambda global lambda
+#' @param n_cores number of CPU cores for parallel computation
 #' @return list(W_A, b0_A, diagnostics)
-fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
+fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
   T <- TAX$T
   C <- TAX$covariates
   Xm <- t(T)
@@ -142,24 +143,17 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
   skipped_no_motif <- 0L
   skipped_few_regs <- 0L
 
-  for (pk in peaks) {
+  pk_fit <- .parallel_lapply(peaks, function(pk) {
     hit <- which(mm[pk, ] > 0)
-    if (length(hit) < 1) {
-      skipped_no_motif <- skipped_no_motif + 1L
-      next
-    }
+    if (length(hit) < 1) return(list(status = "no_motif", pk = pk))
+
     motifs <- colnames(mm)[hit]
     tf_sym <- sub(".*_", "", motifs)
-
-    regs <- character()
-    regs <- c(regs, intersect(paste0("RNA:", tf_sym), rownames(T)))
-    regs <- c(regs, intersect(paste0("MOTIF:", motifs), rownames(T)))
-    regs <- unique(regs)
-
-    if (length(regs) < 3) {
-      skipped_few_regs <- skipped_few_regs + 1L
-      next
-    }
+    regs <- unique(c(
+      intersect(paste0("RNA:", tf_sym), rownames(T)),
+      intersect(paste0("MOTIF:", motifs), rownames(T))
+    ))
+    if (length(regs) < 3) return(list(status = "few_regs", pk = pk))
 
     X <- Xm[, regs, drop=FALSE]
     pen <- rep(1, length(regs))
@@ -178,9 +172,21 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
     )
 
     cf <- glmnet::coef.glmnet(fit)
-    b0[pk] <- as.numeric(cf[1, 1])
-    if (length(regs) > 0) {
-      W[regs, pk] <- as.numeric(cf[match(regs, rownames(cf)), 1])
+    b0_pk <- as.numeric(cf[1, 1])
+    coef_regs <- as.numeric(cf[match(regs, rownames(cf)), 1])
+    names(coef_regs) <- regs
+    list(status = "fit", pk = pk, b0 = b0_pk, coefs = coef_regs)
+  }, n_cores = n_cores)
+
+  for (res in pk_fit) {
+    if (identical(res$status, "no_motif")) {
+      skipped_no_motif <- skipped_no_motif + 1L
+    } else if (identical(res$status, "few_regs")) {
+      skipped_few_regs <- skipped_few_regs + 1L
+    } else if (identical(res$status, "fit")) {
+      b0[res$pk] <- res$b0
+      W[names(res$coefs), res$pk] <- unname(res$coefs)
+      fitted_peaks <- fitted_peaks + 1L
     }
     fitted_peaks <- fitted_peaks + 1L
   }
@@ -207,13 +213,15 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1) {
 #' @param peak_weights optional named numeric GWAS peak weights
 #' @param include_T_direct whether to include direct regulator terms T in stage2
 #' @param motif_map optional motif_map; required if include_T_direct=TRUE
+#' @param n_cores number of CPU cores for parallel computation
 #' @return list(V, W_X, b0_X, diagnostics)
 fit_stage2_A_to_X <- function(
   TAX, p2g_df, genes, lambda = 1,
   obj, atac_assay = "ATAC",
   peak_weights = NULL,
   include_T_direct = FALSE,
-  motif_map = NULL
+  motif_map = NULL,
+  n_cores = 1
 ) {
   Afeat <- TAX$A_log1p
   off <- TAX$offsets$rna
@@ -248,13 +256,10 @@ fit_stage2_A_to_X <- function(
     if (!all(peaks_all %in% rownames(mm)) && all(peaks_all %in% colnames(mm))) mm <- t(mm)
   }
 
-  for (g in genes) {
+  g_fit <- .parallel_lapply(genes, function(g) {
     pks <- unique(p2g_df$peak[p2g_df$gene == g])
     pks <- intersect(pks, peaks_all)
-    if (length(pks) < 5) {
-      skipped_few_peaks <- skipped_few_peaks + 1L
-      next
-    }
+    if (length(pks) < 5) return(list(status = "few_peaks", gene = g))
 
     Xp <- t(Afeat[pks, , drop=FALSE])
     pen_p <- build_stage2_peak_penalty(
@@ -303,11 +308,33 @@ fit_stage2_A_to_X <- function(
     )
 
     cf <- glmnet::coef.glmnet(fit)
-    b0[g] <- as.numeric(cf[1, 1])
-    V[pks, g] <- as.numeric(cf[match(colnames(Xp), rownames(cf)), 1])
+    out <- list(
+      status = "fit",
+      gene = g,
+      b0 = as.numeric(cf[1, 1]),
+      pks = pks,
+      coef_pks = as.numeric(cf[match(colnames(Xp), rownames(cf)), 1]),
+      reg_keep = character(),
+      coef_regs = numeric()
+    )
 
     if (include_T_direct && length(reg_keep) > 0) {
-      Wxt[reg_keep, g] <- as.numeric(cf[match(reg_keep, rownames(cf)), 1])
+      out$reg_keep <- reg_keep
+      out$coef_regs <- as.numeric(cf[match(reg_keep, rownames(cf)), 1])
+    }
+    out
+  }, n_cores = n_cores)
+
+  for (res in g_fit) {
+    if (identical(res$status, "few_peaks")) {
+      skipped_few_peaks <- skipped_few_peaks + 1L
+    } else if (identical(res$status, "fit")) {
+      b0[res$gene] <- res$b0
+      V[res$pks, res$gene] <- res$coef_pks
+      if (include_T_direct && length(res$reg_keep) > 0) {
+        Wxt[res$reg_keep, res$gene] <- res$coef_regs
+      }
+      fitted_genes <- fitted_genes + 1L
     }
     fitted_genes <- fitted_genes + 1L
   }
