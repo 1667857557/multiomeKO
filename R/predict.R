@@ -10,15 +10,21 @@
 #' @param fit2 stage2 fit list(V,W_X,b0_X)
 #' @param ko_regulators character vector of regulator rownames(TAX$T)
 #' @param ko_value value after KO (0 by default)
+#' @param ko_mode "set" sets regulator to ko_value; "scale" multiplies by ko_value
 #' @return list(muA_wt, muA_cf, dA, muX_wt, muX_cf, dX)
-predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0) {
+predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_mode = c("set", "scale")) {
+  ko_mode <- match.arg(ko_mode)
   T <- TAX$T
   if (!all(ko_regulators %in% rownames(T))) {
     stop("Some ko_regulators not found in TAX$T: ", paste(setdiff(ko_regulators, rownames(T)), collapse=", "))
   }
 
   T_cf <- T
-  T_cf[ko_regulators, ] <- ko_value
+  if (ko_mode == "set") {
+    T_cf[ko_regulators, ] <- ko_value
+  } else {
+    T_cf[ko_regulators, ] <- T_cf[ko_regulators, , drop=FALSE] * ko_value
+  }
 
   offA <- TAX$offsets$atac
   offX <- TAX$offsets$rna

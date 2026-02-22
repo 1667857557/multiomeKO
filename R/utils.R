@@ -53,3 +53,29 @@
   x[!is.finite(x)] <- fill
   x
 }
+
+# choose safe nfolds for cv.glmnet based on sample size
+.safe_nfolds <- function(n, max_folds = 5, min_folds = 3) {
+  if (is.na(n) || n < min_folds) return(NA_integer_)
+  as.integer(max(min_folds, min(max_folds, n)))
+}
+
+
+# cross-platform parallel apply helper
+.parallel_lapply <- function(X, FUN, n_cores = 1) {
+  n_cores <- as.integer(n_cores)
+  if (is.na(n_cores) || n_cores < 2 || length(X) < 2) {
+    return(lapply(X, FUN))
+  }
+
+  n_cores <- min(n_cores, length(X))
+  os <- tolower(Sys.info()[["sysname"]])
+
+  if (os == "windows") {
+    cl <- parallel::makeCluster(n_cores)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    parallel::parLapply(cl, X, FUN)
+  } else {
+    parallel::mclapply(X, FUN, mc.cores = n_cores)
+  }
+}
