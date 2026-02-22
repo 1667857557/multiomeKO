@@ -62,24 +62,15 @@
 
 
 # cross-platform parallel lapply (PSOCK on all OS)
-.parallel_lapply <- function(X, FUN, n_cores = 1) {
+.parallel_lapply <- function(X, FUN, n_cores = 1, seed = NULL) {
   n_cores <- as.integer(n_cores)
   if (is.na(n_cores) || n_cores <= 1 || length(X) <= 1) return(lapply(X, FUN))
   n_cores <- min(n_cores, length(X))
   cl <- parallel::makeCluster(n_cores, type = "PSOCK")
   on.exit(parallel::stopCluster(cl), add = TRUE)
-  parallel::clusterEvalQ(cl, {
-    suppressWarnings(suppressPackageStartupMessages(library(Matrix)))
-    suppressWarnings(suppressPackageStartupMessages(library(glmnet)))
-    NULL
-  })
+
+  # improve cross-platform reproducibility when randomness exists in workers
+  if (!is.null(seed)) parallel::clusterSetRNGStream(cl, iseed = as.integer(seed))
+
   parallel::parLapply(cl, X, FUN)
-}
-
-
-# intercept-only Poisson MLE with offset: log(sum(y)/sum(exp(offset)))
-.poisson_intercept_with_offset <- function(y, offset, eps = 1e-12) {
-  num <- sum(as.numeric(y), na.rm = TRUE)
-  den <- sum(exp(as.numeric(offset)), na.rm = TRUE)
-  log((num + eps) / (den + eps))
 }
