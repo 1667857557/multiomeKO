@@ -188,6 +188,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
       W[names(res$coefs), res$pk] <- unname(res$coefs)
       fitted_peaks <- fitted_peaks + 1L
     }
+    fitted_peaks <- fitted_peaks + 1L
   }
 
   list(
@@ -335,6 +336,7 @@ fit_stage2_A_to_X <- function(
       }
       fitted_genes <- fitted_genes + 1L
     }
+    fitted_genes <- fitted_genes + 1L
   }
 
   list(
