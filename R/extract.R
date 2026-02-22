@@ -67,7 +67,7 @@ extract_TAX_metacell <- function(
   off_rna <- log(Matrix::colSums(X_mc_full) + 1)
   off_atac <- log(Matrix::colSums(A_mc_full) + 1)
 
-  # ATAC feature for stage2 (stable across prediction): log1p(count)
+  # ATAC feature for stage2
   A_log1p <- log1p(A_mc)
 
   # Regulators T
@@ -101,12 +101,10 @@ extract_TAX_metacell <- function(
     md <- obj@meta.data
     covariates <- intersect(covariates, colnames(md))
     if (length(covariates) > 0) {
-      # numeric only
       cov_df <- md[, covariates, drop=FALSE]
       keep_num <- vapply(cov_df, is.numeric, logical(1))
       cov_df <- cov_df[, keep_num, drop=FALSE]
       if (ncol(cov_df) > 0) {
-        # aggregate mean per metacell
         cov_mat <- t(as.matrix(cov_df))
         C <- .aggregate_by_group(cov_mat, metacell_ids, fun = "mean")
         rownames(C) <- paste0("COV:", rownames(C))
