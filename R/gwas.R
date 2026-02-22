@@ -3,11 +3,11 @@
 #' Read fine-mapping SNP table
 #' @param path tsv/csv path
 #' @param chr_col,pos_col,pip_col column names
-#' @param sep separator; NULL auto-detects by extension (.csv => ',', else tab)
+#' @param sep delimiter; if NULL, auto-detect from file extension
 #' @return data.frame
 read_finemap_snps <- function(path, chr_col = "chr", pos_col = "pos", pip_col = "pip", sep = NULL) {
   if (is.null(sep)) {
-    sep <- if (grepl("\\.csv$", tolower(path))) "," else "\t"
+    sep <- if (grepl('\\.csv$', path, ignore.case = TRUE)) "," else "\t"
   }
   df <- utils::read.table(path, header = TRUE, sep = sep, stringsAsFactors = FALSE, check.names = FALSE)
   if (!(chr_col %in% names(df))) stop("chr_col not found")

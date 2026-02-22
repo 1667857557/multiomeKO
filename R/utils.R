@@ -49,9 +49,11 @@
   if (is.null(names(v))) {
     if (length(v) == 1) return(rep(v, length(rn)))
     if (length(v) == length(rn)) return(as.numeric(v))
-    stop("Unnamed vector length must be 1 or match target length")
+    stop("Unnamed vector length must be 1 or equal to target length")
   }
-  v[rn]
+  out <- v[rn]
+  if (any(is.na(out))) stop("Named vector missing entries for some target names")
+  out
 }
 
 # keep only finite values

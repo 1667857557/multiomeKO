@@ -77,6 +77,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   etaA_wt <- .clip_eta(etaA_wt)
   etaA_cf <- .clip_eta(etaA_cf)
 
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
+
   muA_wt <- exp(etaA_wt)
   muA_cf <- exp(etaA_cf)
 
@@ -118,6 +121,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
 
   etaX_wt <- t(t(as.matrix(etaX_wt)) + offX)
   etaX_cf <- t(t(as.matrix(etaX_cf)) + offX)
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
+
   etaX_wt <- .clip_eta(etaX_wt)
   etaX_cf <- .clip_eta(etaX_cf)
 
