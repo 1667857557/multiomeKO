@@ -192,6 +192,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
     } else if (x$status == "few_regs") {
       skipped_few_regs <- skipped_few_regs + 1L
     }
+    fitted_peaks <- fitted_peaks + 1L
   }
 
   list(
