@@ -38,7 +38,8 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
 
   offA <- TAX$offsets$atac
   offX <- TAX$offsets$rna
-  .clip_eta <- function(x, lo = -30, hi = 30) pmin(hi, pmax(lo, x))
+  C <- TAX$covariates
+  Cm <- if (!is.null(C)) t(C) else NULL
 
   .clip_eta <- function(x, lo = -30, hi = 30) pmin(hi, pmax(lo, x))
 
@@ -49,9 +50,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   etaA_wt <- (Matrix::t(W_A) %*% T)              # peaks x metacells
   etaA_cf <- (Matrix::t(W_A) %*% T_cf)
 
-  if (!is.null(fit1$Bcov_A) && !is.null(C)) {
-    etaA_wt <- etaA_wt + (Matrix::t(fit1$Bcov_A) %*% C)
-    etaA_cf <- etaA_cf + (Matrix::t(fit1$Bcov_A) %*% C)
+  if (!is.null(fit1$Bcov_A) && !is.null(Cm)) {
+    etaA_wt <- etaA_wt + (Matrix::t(fit1$Bcov_A) %*% Cm)
+    etaA_cf <- etaA_cf + (Matrix::t(fit1$Bcov_A) %*% Cm)
   }
 
   # add intercept (recycle across columns)
@@ -61,6 +62,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   # add offsets per metacell (column-wise)
   etaA_wt <- t(t(as.matrix(etaA_wt)) + offA)
   etaA_cf <- t(t(as.matrix(etaA_cf)) + offA)
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
+
   etaA_wt <- .clip_eta(etaA_wt)
   etaA_cf <- .clip_eta(etaA_cf)
 
@@ -98,9 +102,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
     etaX_cf <- etaX_cf + (Matrix::t(fit2$W_X) %*% T_cf)
   }
 
-  if (!is.null(fit2$Bcov_X) && !is.null(C)) {
-    etaX_wt <- etaX_wt + (Matrix::t(fit2$Bcov_X) %*% C)
-    etaX_cf <- etaX_cf + (Matrix::t(fit2$Bcov_X) %*% C)
+  if (!is.null(fit2$Bcov_X) && !is.null(Cm)) {
+    etaX_wt <- etaX_wt + (Matrix::t(fit2$Bcov_X) %*% Cm)
+    etaX_cf <- etaX_cf + (Matrix::t(fit2$Bcov_X) %*% Cm)
   }
 
   etaX_wt <- etaX_wt + b0X
@@ -108,6 +112,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
 
   etaX_wt <- t(t(as.matrix(etaX_wt)) + offX)
   etaX_cf <- t(t(as.matrix(etaX_cf)) + offX)
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
+
   etaX_wt <- .clip_eta(etaX_wt)
   etaX_cf <- .clip_eta(etaX_cf)
 

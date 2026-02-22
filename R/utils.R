@@ -8,7 +8,9 @@
 # sparse group design matrix: cells x groups
 .group_design <- function(groups) {
   groups <- as.factor(groups)
-  Matrix::sparse.model.matrix(~0 + groups)
+  G <- Matrix::sparse.model.matrix(~0 + groups)
+  colnames(G) <- levels(groups)
+  G
 }
 
 # aggregate features x cells sparse/dense matrix into features x groups
