@@ -10,18 +10,33 @@
 #' @param fit2 stage2 fit list(V,W_X,b0_X)
 #' @param ko_regulators character vector of regulator rownames(TAX$T)
 #' @param ko_value value after KO (0 by default)
+#' @param ko_mode "set" sets regulator to ko_value; "scale" multiplies by ko_value
 #' @return list(muA_wt, muA_cf, dA, muX_wt, muX_cf, dX)
-predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0) {
+predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_mode = c("set", "scale")) {
+  ko_mode <- match.arg(ko_mode)
   T <- TAX$T
   if (!all(ko_regulators %in% rownames(T))) {
     stop("Some ko_regulators not found in TAX$T: ", paste(setdiff(ko_regulators, rownames(T)), collapse=", "))
   }
 
   T_cf <- T
-  T_cf[ko_regulators, ] <- ko_value
+  if (ko_mode == "set") {
+    T_cf[ko_regulators, ] <- ko_value
+  } else {
+    rna_regs <- ko_regulators[grepl("^RNA:", ko_regulators)]
+    motif_regs <- setdiff(ko_regulators, rna_regs)
+    if (length(rna_regs) > 0) {
+      cpm <- expm1(T_cf[rna_regs, , drop=FALSE])
+      T_cf[rna_regs, ] <- log1p(cpm * ko_value)
+    }
+    if (length(motif_regs) > 0) {
+      T_cf[motif_regs, ] <- T_cf[motif_regs, , drop=FALSE] * ko_value
+    }
+  }
 
   offA <- TAX$offsets$atac
   offX <- TAX$offsets$rna
+  .clip_eta <- function(x, lo = -30, hi = 30) pmin(hi, pmax(lo, x))
 
   # ---- Stage1: muA = exp(b0 + W^T T + offset) ----
   W_A <- fit1$W_A
@@ -37,6 +52,8 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0) {
   # add offsets per metacell (column-wise)
   etaA_wt <- t(t(as.matrix(etaA_wt)) + offA)
   etaA_cf <- t(t(as.matrix(etaA_cf)) + offA)
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
 
   muA_wt <- exp(etaA_wt)
   muA_cf <- exp(etaA_cf)
@@ -50,6 +67,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0) {
   # ---- Stage2: muX = exp(b0 + V^T Afeat + W_X^T T + offset) ----
   V <- fit2$V
   genes <- colnames(V)
+  peaks_v <- rownames(V)
+  Afeat_wt <- Afeat_wt[peaks_v, , drop=FALSE]
+  Afeat_cf <- Afeat_cf[peaks_v, , drop=FALSE]
 
   b0X <- .align_vec(fit2$b0_X, genes)
 
@@ -67,6 +87,8 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0) {
 
   etaX_wt <- t(t(as.matrix(etaX_wt)) + offX)
   etaX_cf <- t(t(as.matrix(etaX_cf)) + offX)
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
 
   muX_wt <- exp(etaX_wt)
   muX_cf <- exp(etaX_cf)

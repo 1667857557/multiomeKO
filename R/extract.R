@@ -40,39 +40,44 @@ extract_TAX_metacell <- function(
     metacell_ids <- as.factor(metacell_ids)
   }
 
-  # RNA counts
-  Xc <- Seurat::GetAssayData(obj, assay = rna_assay, slot = "counts")
+  # Full counts kept for robust offsets and TF extraction
+  Xc_full <- Seurat::GetAssayData(obj, assay = rna_assay, slot = "counts")
+  Ac_full <- Seurat::GetAssayData(obj, assay = atac_assay, slot = "counts")
+
+  # X response counts (optionally subset)
+  Xc <- Xc_full
   if (!is.null(genes_use)) {
-    genes_use <- intersect(genes_use, rownames(Xc))
-    Xc <- Xc[genes_use, , drop=FALSE]
+    genes_use <- intersect(genes_use, rownames(Xc_full))
+    Xc <- Xc_full[genes_use, , drop=FALSE]
   }
 
-  # ATAC counts
-  Ac <- Seurat::GetAssayData(obj, assay = atac_assay, slot = "counts")
+  # A response counts (optionally subset)
+  Ac <- Ac_full
   if (!is.null(peaks_use)) {
-    peaks_use <- intersect(peaks_use, rownames(Ac))
-    Ac <- Ac[peaks_use, , drop=FALSE]
+    peaks_use <- intersect(peaks_use, rownames(Ac_full))
+    Ac <- Ac_full[peaks_use, , drop=FALSE]
   }
 
   # Aggregate to metacells (SUM for count models)
   X_mc <- .aggregate_by_group(Xc, metacell_ids, fun = "sum")
   A_mc <- .aggregate_by_group(Ac, metacell_ids, fun = "sum")
 
-  # Offsets
-  off_rna <- log(Matrix::colSums(X_mc) + 1)
-  off_atac <- log(Matrix::colSums(A_mc) + 1)
+  # Offsets should use full library sizes, not model-feature subsets
+  X_mc_full <- .aggregate_by_group(Xc_full, metacell_ids, fun = "sum")
+  A_mc_full <- .aggregate_by_group(Ac_full, metacell_ids, fun = "sum")
+  off_rna <- log(Matrix::colSums(X_mc_full) + 1)
+  off_atac <- log(Matrix::colSums(A_mc_full) + 1)
 
-  # ATAC feature for stage2 (stable across prediction): log1p(count)
+  # ATAC feature for stage2
   A_log1p <- log1p(A_mc)
 
   # Regulators T
   T_list <- list()
   if (tf_mode %in% c("RNA", "both")) {
     if (is.null(tf_genes)) stop("tf_genes is required when tf_mode includes RNA")
-    tf_genes <- intersect(tf_genes, rownames(Xc))
-    if (length(tf_genes) == 0) stop("No tf_genes found in RNA counts")
-    # Use log1p CPM-like scale for TF RNA as covariates (not as response)
-    X_tf_log <- .log1p_cpm(Xc[tf_genes, , drop=FALSE])
+    tf_genes <- intersect(tf_genes, rownames(Xc_full))
+    if (length(tf_genes) == 0) stop("No tf_genes found in full RNA counts")
+    X_tf_log <- .log1p_cpm(Xc_full[tf_genes, , drop=FALSE])
     T_rna <- .aggregate_by_group(X_tf_log, metacell_ids, fun = "mean")
     rownames(T_rna) <- paste0("RNA:", rownames(T_rna))
     T_list[["RNA"]] <- T_rna
@@ -96,12 +101,10 @@ extract_TAX_metacell <- function(
     md <- obj@meta.data
     covariates <- intersect(covariates, colnames(md))
     if (length(covariates) > 0) {
-      # numeric only
       cov_df <- md[, covariates, drop=FALSE]
       keep_num <- vapply(cov_df, is.numeric, logical(1))
       cov_df <- cov_df[, keep_num, drop=FALSE]
       if (ncol(cov_df) > 0) {
-        # aggregate mean per metacell
         cov_mat <- t(as.matrix(cov_df))
         C <- .aggregate_by_group(cov_mat, metacell_ids, fun = "mean")
         rownames(C) <- paste0("COV:", rownames(C))
