@@ -53,3 +53,9 @@
   x[!is.finite(x)] <- fill
   x
 }
+
+# choose safe nfolds for cv.glmnet based on sample size
+.safe_nfolds <- function(n, max_folds = 5, min_folds = 3) {
+  if (is.na(n) || n < min_folds) return(NA_integer_)
+  as.integer(max(min_folds, min(max_folds, n)))
+}

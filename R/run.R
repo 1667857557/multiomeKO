@@ -16,6 +16,8 @@
 #' @param tf_mode RNA/chromvar/both
 #' @param tf_genes TF genes if needed
 #' @param include_T_direct include direct regulator terms in stage2 (default FALSE)
+#' @param ko_value KO value; interpreted by ko_mode
+#' @param ko_mode 'set' (set regulator to ko_value) or 'scale' (multiply by ko_value)
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
 #' @param lambda_A,lambda_X optional; if NULL estimated on subset
@@ -30,6 +32,8 @@ run_virtual_ko_optimized <- function(
   tf_mode = c("RNA", "chromvar", "both"),
   tf_genes = NULL,
   include_T_direct = FALSE,
+  ko_value = 0,
+  ko_mode = c("set", "scale"),
   finemap_snps = NULL,
   pip_floor = 0,
   lambda_A = NULL,
@@ -39,6 +43,7 @@ run_virtual_ko_optimized <- function(
   atac_assay = "ATAC"
 ) {
   tf_mode <- match.arg(tf_mode)
+  ko_mode <- match.arg(ko_mode)
 
   # ---- priors: peak2gene ----
   p2g <- get_peak2gene_links(obj, atac_assay = atac_assay)
@@ -72,6 +77,11 @@ run_virtual_ko_optimized <- function(
   mc <- make_metacell_ids(obj, group.by = group.by, n_cells = n_cells, seed = seed)
 
   # ---- extract shared T/A/X ----
+  if (tf_mode %in% c("RNA", "both") && is.null(tf_genes)) {
+    warning("tf_genes is NULL; fallback to genes_use for RNA regulators")
+    tf_genes <- genes_use
+  }
+
   TAX <- extract_TAX_metacell(
     obj,
     metacell_ids = mc,
@@ -111,7 +121,26 @@ run_virtual_ko_optimized <- function(
   )
 
   # ---- predict KO ----
-  pred <- predict_virtual_ko(TAX, fit1, fit2, ko_regulators = ko_regulator)
+  pred <- predict_virtual_ko(
+    TAX, fit1, fit2,
+    ko_regulators = ko_regulator,
+    ko_value = ko_value,
+    ko_mode = ko_mode
+  )
+
+
+  if (!is.null(fit1$diagnostics)) {
+    frac1 <- fit1$diagnostics$fitted_peaks / max(1, fit1$diagnostics$total_peaks)
+    if (is.finite(frac1) && frac1 < 0.5) {
+      warning(sprintf("Stage1 fitted peak fraction is low: %.1f%%", 100 * frac1))
+    }
+  }
+  if (!is.null(fit2$diagnostics)) {
+    frac2 <- fit2$diagnostics$fitted_genes / max(1, fit2$diagnostics$total_genes)
+    if (is.finite(frac2) && frac2 < 0.5) {
+      warning(sprintf("Stage2 fitted gene fraction is low: %.1f%%", 100 * frac2))
+    }
+  }
 
   rank_genes <- rank_by_effect(pred$dX, top_n = 100)
   rank_peaks <- rank_by_effect(pred$dA, top_n = 100)
@@ -125,7 +154,9 @@ run_virtual_ko_optimized <- function(
       tf_mode = tf_mode,
       lambda_A = lambda_A,
       lambda_X = lambda_X,
-      ko_regulator = ko_regulator
+      ko_regulator = ko_regulator,
+      ko_value = ko_value,
+      ko_mode = ko_mode
     ),
     gwas = list(snp_peak = snp_peak, peak_weights = peak_w),
     fits = list(stage1 = fit1, stage2 = fit2),
