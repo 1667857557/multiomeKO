@@ -9,7 +9,6 @@
 .group_design <- function(groups) {
   groups <- as.factor(groups)
   G <- Matrix::sparse.model.matrix(~0 + groups)
-  # keep group labels consistent with factor levels (avoid "groups" prefix leakage)
   colnames(G) <- levels(groups)
   G
 }
@@ -47,7 +46,11 @@
 
 # safe align vector to matrix rownames
 .align_vec <- function(v, rn) {
-  if (is.null(names(v))) return(rep(v, length(rn)))
+  if (is.null(names(v))) {
+    if (length(v) == 1) return(rep(v, length(rn)))
+    if (length(v) == length(rn)) return(as.numeric(v))
+    stop("Unnamed vector length must be 1 or match target length")
+  }
   v[rn]
 }
 
