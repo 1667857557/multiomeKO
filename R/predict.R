@@ -15,6 +15,7 @@
 predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_mode = c("set", "scale")) {
   ko_mode <- match.arg(ko_mode)
   T <- TAX$T
+  C <- TAX$covariates
   if (!all(ko_regulators %in% rownames(T))) {
     stop("Some ko_regulators not found in TAX$T: ", paste(setdiff(ko_regulators, rownames(T)), collapse=", "))
   }
@@ -61,6 +62,20 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   # add offsets per metacell (column-wise)
   etaA_wt <- t(t(as.matrix(etaA_wt)) + offA)
   etaA_cf <- t(t(as.matrix(etaA_cf)) + offA)
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
+
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
+
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
+
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
+
+  etaA_wt <- .clip_eta(etaA_wt)
+  etaA_cf <- .clip_eta(etaA_cf)
 
   etaA_wt <- .clip_eta(etaA_wt)
   etaA_cf <- .clip_eta(etaA_cf)
@@ -77,6 +92,9 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   # ---- Stage2: muX = exp(b0 + V^T Afeat + W_X^T T + offset) ----
   V <- fit2$V
   genes <- colnames(V)
+  peaks_v <- rownames(V)
+  Afeat_wt <- Afeat_wt[peaks_v, , drop=FALSE]
+  Afeat_cf <- Afeat_cf[peaks_v, , drop=FALSE]
 
   b0X <- .align_vec(fit2$b0_X, genes)
 
@@ -103,6 +121,20 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
 
   etaX_wt <- t(t(as.matrix(etaX_wt)) + offX)
   etaX_cf <- t(t(as.matrix(etaX_cf)) + offX)
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
+
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
+
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
+
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
+
+  etaX_wt <- .clip_eta(etaX_wt)
+  etaX_cf <- .clip_eta(etaX_cf)
 
   etaX_wt <- .clip_eta(etaX_wt)
   etaX_cf <- .clip_eta(etaX_cf)
