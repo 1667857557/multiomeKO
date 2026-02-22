@@ -118,7 +118,7 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1, 
 #' @param peaks peaks to fit
 #' @param lambda global lambda
 #' @param n_cores number of cores for parallel loop
-#' @return list(W_A, Bcov_A, b0_A, diagnostics)
+#' @return list(W_A, b0_A, diagnostics)
 fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
   T <- TAX$T
   C <- TAX$covariates
@@ -134,7 +134,10 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
 
   res_list <- .parallel_lapply(peaks, n_cores = n_cores, FUN = function(pk) {
     hit <- which(mm[pk, ] > 0)
-    if (length(hit) < 1) return(list(pk = pk, b0 = 0, regs = character(), coefs = numeric(), status = "no_motif"))
+    if (length(hit) < 1) {
+      b0_null <- .poisson_intercept_with_offset(TAX$A_counts[pk, ], off)
+      return(list(pk = pk, b0 = b0_null, regs = character(), coefs = numeric(), status = "no_motif"))
+    }
 
     motifs <- colnames(mm)[hit]
     tf_sym <- sub(".*_", "", motifs)
@@ -142,7 +145,10 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
       intersect(paste0("RNA:", tf_sym), rownames(T)),
       intersect(paste0("MOTIF:", motifs), rownames(T))
     ))
-    if (length(regs) < 3) return(list(pk = pk, b0 = 0, regs = character(), coefs = numeric(), status = "few_regs"))
+    if (length(regs) < 3) {
+      b0_null <- .poisson_intercept_with_offset(TAX$A_counts[pk, ], off)
+      return(list(pk = pk, b0 = b0_null, regs = character(), coefs = numeric(), status = "few_regs"))
+    }
 
     X <- Xm[, regs, drop=FALSE]
     pen <- rep(1, length(regs))
@@ -162,21 +168,12 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
 
     cf <- glmnet::coef.glmnet(fit)
     coef_vals <- as.numeric(cf[match(regs, rownames(cf)), 1])
-    cov_names <- if (!is.null(Cm)) colnames(Cm) else character()
-    cov_vals <- if (length(cov_names) > 0) as.numeric(cf[match(cov_names, rownames(cf)), 1]) else numeric()
-
-    list(pk = pk, b0 = as.numeric(cf[1, 1]), regs = regs, coefs = coef_vals, cov_names = cov_names, cov_vals = cov_vals, status = "fit")
+    list(pk = pk, b0 = as.numeric(cf[1, 1]), regs = regs, coefs = coef_vals, status = "fit")
   })
 
   W <- Matrix::Matrix(0, nrow = nrow(T), ncol = length(peaks), sparse = TRUE,
                       dimnames = list(rownames(T), peaks))
   b0 <- setNames(rep(0, length(peaks)), peaks)
-
-  Bcov <- NULL
-  if (!is.null(C)) {
-    Bcov <- Matrix::Matrix(0, nrow = nrow(C), ncol = length(peaks), sparse = TRUE,
-                           dimnames = list(rownames(C), peaks))
-  }
   fitted_peaks <- 0L
   skipped_no_motif <- 0L
   skipped_few_regs <- 0L
@@ -185,7 +182,6 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
     b0[x$pk] <- x$b0
     if (x$status == "fit") {
       if (length(x$regs) > 0) W[x$regs, x$pk] <- x$coefs
-      if (!is.null(Bcov) && length(x$cov_names) > 0) Bcov[x$cov_names, x$pk] <- x$cov_vals
       fitted_peaks <- fitted_peaks + 1L
     } else if (x$status == "no_motif") {
       skipped_no_motif <- skipped_no_motif + 1L
@@ -197,7 +193,6 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
 
   list(
     W_A = W,
-    Bcov_A = Bcov,
     b0_A = b0,
     diagnostics = list(
       total_peaks = length(peaks),
@@ -219,7 +214,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
 #' @param include_T_direct whether to include direct regulator terms T in stage2
 #' @param motif_map optional motif_map; required if include_T_direct=TRUE
 #' @param n_cores number of cores for parallel loop
-#' @return list(V, W_X, Bcov_X, b0_X, diagnostics)
+#' @return list(V, W_X, b0_X, diagnostics)
 fit_stage2_A_to_X <- function(
   TAX, p2g_df, genes, lambda = 1,
   obj, atac_assay = "ATAC",
@@ -253,7 +248,8 @@ fit_stage2_A_to_X <- function(
     pks <- unique(p2g_df$peak[p2g_df$gene == g])
     pks <- intersect(pks, peaks_all)
     if (length(pks) < 5) {
-      return(list(g = g, b0 = 0, pks = character(), v = numeric(), reg_keep = character(), w = numeric(), status = "few_peaks"))
+      b0_null <- .poisson_intercept_with_offset(TAX$X_counts[g, ], off)
+      return(list(g = g, b0 = b0_null, pks = character(), v = numeric(), reg_keep = character(), w = numeric(), status = "few_peaks"))
     }
 
     Xp <- t(Afeat[pks, , drop=FALSE])
@@ -308,21 +304,12 @@ fit_stage2_A_to_X <- function(
       w <- as.numeric(cf[match(reg_keep, rownames(cf)), 1])
     }
 
-    cov_names <- if (!is.null(Cm)) colnames(Cm) else character()
-    cov_vals <- if (length(cov_names) > 0) as.numeric(cf[match(cov_names, rownames(cf)), 1]) else numeric()
-
-    list(g = g, b0 = as.numeric(cf[1, 1]), pks = pks, v = v, reg_keep = reg_keep, w = w, cov_names = cov_names, cov_vals = cov_vals, status = "fit")
+    list(g = g, b0 = as.numeric(cf[1, 1]), pks = pks, v = v, reg_keep = reg_keep, w = w, status = "fit")
   })
 
   V <- Matrix::Matrix(0, nrow = length(peaks_all), ncol = length(genes), sparse = TRUE,
                       dimnames = list(peaks_all, genes))
   b0 <- setNames(rep(0, length(genes)), genes)
-
-  BcovX <- NULL
-  if (!is.null(C)) {
-    BcovX <- Matrix::Matrix(0, nrow = nrow(C), ncol = length(genes), sparse = TRUE,
-                            dimnames = list(rownames(C), genes))
-  }
 
   Wxt <- NULL
   if (include_T_direct) {
@@ -340,14 +327,12 @@ fit_stage2_A_to_X <- function(
     }
     if (length(x$pks) > 0) V[x$pks, x$g] <- x$v
     if (include_T_direct && length(x$reg_keep) > 0) Wxt[x$reg_keep, x$g] <- x$w
-    if (!is.null(BcovX) && length(x$cov_names) > 0) BcovX[x$cov_names, x$g] <- x$cov_vals
     fitted_genes <- fitted_genes + 1L
   }
 
   list(
     V = V,
     W_X = Wxt,
-    Bcov_X = BcovX,
     b0_X = b0,
     diagnostics = list(
       total_genes = length(genes),

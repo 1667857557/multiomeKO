@@ -68,5 +68,18 @@
   n_cores <- min(n_cores, length(X))
   cl <- parallel::makeCluster(n_cores, type = "PSOCK")
   on.exit(parallel::stopCluster(cl), add = TRUE)
+  parallel::clusterEvalQ(cl, {
+    suppressWarnings(suppressPackageStartupMessages(library(Matrix)))
+    suppressWarnings(suppressPackageStartupMessages(library(glmnet)))
+    NULL
+  })
   parallel::parLapply(cl, X, FUN)
+}
+
+
+# intercept-only Poisson MLE with offset: log(sum(y)/sum(exp(offset)))
+.poisson_intercept_with_offset <- function(y, offset, eps = 1e-12) {
+  num <- sum(as.numeric(y), na.rm = TRUE)
+  den <- sum(exp(as.numeric(offset)), na.rm = TRUE)
+  log((num + eps) / (den + eps))
 }
