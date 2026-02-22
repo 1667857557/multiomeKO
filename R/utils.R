@@ -9,6 +9,7 @@
 .group_design <- function(groups) {
   groups <- as.factor(groups)
   G <- Matrix::sparse.model.matrix(~0 + groups)
+  # keep group labels consistent with factor levels (avoid "groups" prefix leakage)
   colnames(G) <- levels(groups)
   G
 }

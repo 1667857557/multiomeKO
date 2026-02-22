@@ -11,9 +11,10 @@
 #' @param group.by Character vector of metadata columns to stratify (e.g. celltype, SampleID).
 #' @param n_cells Target number of cells per metacell within each stratum.
 #' @param min_cells Minimum cells required to keep a stratum; smaller strata are kept as one metacell.
+#' @param min_tail_cells If the last bucket within a stratum has fewer cells than this threshold, merge it into the previous bucket to avoid tiny noisy metacells.
 #' @param seed Random seed.
 #' @return A factor vector of metacell ids aligned to cells (colnames(obj)).
-make_metacell_ids <- function(obj, group.by, n_cells = 50, min_cells = 25, seed = 1) {
+make_metacell_ids <- function(obj, group.by, n_cells = 50, min_cells = 25, min_tail_cells = max(5, floor(n_cells / 2)), seed = 1) {
   md <- obj@meta.data
   if (!all(group.by %in% colnames(md))) {
     stop("group.by columns not found in obj@meta.data: ", paste(setdiff(group.by, colnames(md)), collapse=", "))
@@ -38,6 +39,13 @@ make_metacell_ids <- function(obj, group.by, n_cells = 50, min_cells = 25, seed 
     idx <- sample(idx)
     k <- ceiling(length(idx) / n_cells)
     split_ids <- rep(seq_len(k), each = n_cells)[seq_along(idx)]
+
+    # merge tiny tail bucket into previous one to reduce high-variance pseudo-bulks
+    if (k > 1) {
+      tail_n <- sum(split_ids == k)
+      if (tail_n < min_tail_cells) split_ids[split_ids == k] <- k - 1L
+    }
+
     metacell[idx] <- paste0(g, "__mc", split_ids)
   }
 
