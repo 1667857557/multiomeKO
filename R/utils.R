@@ -61,21 +61,12 @@
 }
 
 
-# cross-platform parallel apply helper
+# cross-platform parallel lapply (PSOCK on all OS)
 .parallel_lapply <- function(X, FUN, n_cores = 1) {
   n_cores <- as.integer(n_cores)
-  if (is.na(n_cores) || n_cores < 2 || length(X) < 2) {
-    return(lapply(X, FUN))
-  }
-
+  if (is.na(n_cores) || n_cores <= 1 || length(X) <= 1) return(lapply(X, FUN))
   n_cores <- min(n_cores, length(X))
-  os <- tolower(Sys.info()[["sysname"]])
-
-  if (os == "windows") {
-    cl <- parallel::makeCluster(n_cores)
-    on.exit(parallel::stopCluster(cl), add = TRUE)
-    parallel::parLapply(cl, X, FUN)
-  } else {
-    parallel::mclapply(X, FUN, mc.cores = n_cores)
-  }
+  cl <- parallel::makeCluster(n_cores, type = "PSOCK")
+  on.exit(parallel::stopCluster(cl), add = TRUE)
+  parallel::parLapply(cl, X, FUN)
 }

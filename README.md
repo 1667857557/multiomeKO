@@ -25,7 +25,7 @@ Then it applies counterfactual perturbation (KO) to predict downstream changes i
   - `ko_mode = "set"` (set regulator value to a constant);
   - `ko_mode = "scale"` (scale regulator by a factor).
 - **Diagnostics in model outputs** to track fitted/skipped peaks/genes.
-- **Cross-platform parallel acceleration** via `n_cores` (Windows and Linux/macOS).
+- **Cross-platform parallel acceleration** (`n_cores`) using PSOCK clusters (Linux/Windows).
 
 ---
 

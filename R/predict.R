@@ -6,8 +6,8 @@
 #' on log1p(mu) scale for numerical stability and interpretability.
 #'
 #' @param TAX output of extract_TAX_metacell
-#' @param fit1 stage1 fit list(W_A,b0_A)
-#' @param fit2 stage2 fit list(V,W_X,b0_X)
+#' @param fit1 stage1 fit list(W_A,Bcov_A,b0_A)
+#' @param fit2 stage2 fit list(V,W_X,Bcov_X,b0_X)
 #' @param ko_regulators character vector of regulator rownames(TAX$T)
 #' @param ko_value value after KO (0 by default)
 #' @param ko_mode "set" sets regulator to ko_value; "scale" multiplies by ko_value
@@ -28,6 +28,7 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
 
   offA <- TAX$offsets$atac
   offX <- TAX$offsets$rna
+  C <- TAX$covariates
 
   # ---- Stage1: muA = exp(b0 + W^T T + offset) ----
   W_A <- fit1$W_A
@@ -35,6 +36,16 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
 
   etaA_wt <- (Matrix::t(W_A) %*% T)              # peaks x metacells
   etaA_cf <- (Matrix::t(W_A) %*% T_cf)
+
+  if (!is.null(fit1$Bcov_A) && !is.null(C)) {
+    Cuse <- C[intersect(rownames(C), rownames(fit1$Bcov_A)), , drop = FALSE]
+    BcovA <- fit1$Bcov_A[rownames(Cuse), , drop = FALSE]
+    if (nrow(Cuse) > 0) {
+      etaA_c <- Matrix::t(BcovA) %*% Cuse
+      etaA_wt <- etaA_wt + etaA_c
+      etaA_cf <- etaA_cf + etaA_c
+    }
+  }
 
   # add intercept (recycle across columns)
   etaA_wt <- etaA_wt + b0A
@@ -66,6 +77,16 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   if (!is.null(fit2$W_X)) {
     etaX_wt <- etaX_wt + (Matrix::t(fit2$W_X) %*% T)
     etaX_cf <- etaX_cf + (Matrix::t(fit2$W_X) %*% T_cf)
+  }
+
+  if (!is.null(fit2$Bcov_X) && !is.null(C)) {
+    Cuse <- C[intersect(rownames(C), rownames(fit2$Bcov_X)), , drop = FALSE]
+    BcovX <- fit2$Bcov_X[rownames(Cuse), , drop = FALSE]
+    if (nrow(Cuse) > 0) {
+      etaX_c <- Matrix::t(BcovX) %*% Cuse
+      etaX_wt <- etaX_wt + etaX_c
+      etaX_cf <- etaX_cf + etaX_c
+    }
   }
 
   etaX_wt <- etaX_wt + b0X

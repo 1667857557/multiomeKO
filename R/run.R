@@ -72,7 +72,7 @@ EOF
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
 #' @param lambda_A,lambda_X optional; if NULL estimated on subset
-#' @param n_cores number of CPU cores for parallel computation
+#' @param n_cores number of CPU cores for parallelizable loops
 #' @param seed random seed
 #' @return list(setup, fits, diagnostics, pred, rank_genes, rank_peaks)
 run_virtual_ko_optimized <- function(
