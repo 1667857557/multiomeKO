@@ -26,8 +26,9 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
   Xm <- t(T)
   Cm <- if (!is.null(C)) t(C) else NULL
   off <- TAX$offsets$atac
+  TAX$A_counts <- .as_dgC(TAX$A_counts, name = "TAX$A_counts")
 
-  mm <- motif_map$motif_mat
+  mm <- .as_dgC(motif_map$motif_mat, name = "motif_map$motif_mat")
   if (!all(peaks_s %in% rownames(mm)) && all(peaks_s %in% colnames(mm))) mm <- t(mm)
   mm <- mm[intersect(peaks_s, rownames(mm)), , drop=FALSE]
 
@@ -83,11 +84,15 @@ estimate_lambda_stage1 <- function(TAX, motif_map, peaks, n_sample = 50, alpha =
 #' @return numeric lambda
 estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1, n_cores = 1) {
   set.seed(seed)
+  if (!is.data.frame(p2g_df) || !all(c("peak", "gene") %in% colnames(p2g_df))) {
+    stop("p2g_df must be a data.frame with columns peak and gene")
+  }
+
   genes <- intersect(genes, rownames(TAX$X_counts))
   if (length(genes) == 0) stop("No genes available for lambda estimation")
   genes_s <- sample(genes, min(n_sample, length(genes)))
 
-  Afeat <- TAX$A_log1p
+  Afeat <- .as_dgC(TAX$A_log1p, name = "TAX$A_log1p")
   off <- TAX$offsets$rna
 
   lam_list <- .parallel_lapply(genes_s, n_cores = n_cores, seed = seed, FUN = function(g) {
@@ -121,36 +126,67 @@ estimate_lambda_stage2 <- function(TAX, p2g_df, genes, n_sample = 50, seed = 1, 
 
 #' Fit stage1: TF/Regulator -> peak accessibility (Poisson ridge)
 #' @param TAX output of extract_TAX_metacell
-#' @param motif_map output of get_peak_motif_map
+#' @param stage1_prior output of get_peak_motif_map() or build_stage1_priors()
 #' @param peaks peaks to fit
 #' @param lambda global lambda
 #' @param n_cores number of cores for parallel loop
 #' @return list(W_A, b0_A, diagnostics)
-fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
+fit_stage1_T_to_A <- function(TAX, stage1_prior, peaks, lambda = 1, n_cores = 1) {
   T <- TAX$T
   C <- TAX$covariates
   Xm <- t(T)
   Cm <- if (!is.null(C)) t(C) else NULL
   cov_names <- if (!is.null(C)) rownames(C) else character()
   off <- TAX$offsets$atac
+  TAX$A_counts <- .as_dgC(TAX$A_counts, name = "TAX$A_counts")
 
-  mm <- motif_map$motif_mat
-  if (!all(peaks %in% rownames(mm)) && all(peaks %in% colnames(mm))) mm <- t(mm)
-  peaks <- intersect(peaks, rownames(mm))
+  prior_mode <- if (is.list(stage1_prior) && !is.null(stage1_prior$stage1_mode)) stage1_prior$stage1_mode else "motif"
+  mm <- NULL
+  chip_peak_map <- NULL
+  if (is.list(stage1_prior) && !is.null(stage1_prior$motif_map)) {
+    mm <- stage1_prior$motif_map$motif_mat
+  } else if (is.list(stage1_prior) && !is.null(stage1_prior$motif_mat)) {
+    mm <- stage1_prior$motif_mat
+  }
+  if (!is.null(mm)) {
+    mm <- .as_dgC(mm, name = "stage1 motif_mat")
+    if (!all(peaks %in% rownames(mm)) && all(peaks %in% colnames(mm))) mm <- Matrix::t(mm)
+  }
+  if (is.list(stage1_prior) && !is.null(stage1_prior$chip_peak_map)) {
+    chip_peak_map <- stage1_prior$chip_peak_map
+  }
+
   peaks <- intersect(peaks, rownames(TAX$A_counts))
+  if (!is.null(mm)) peaks <- intersect(peaks, rownames(mm))
   if (length(peaks) == 0) stop("No peaks to fit in stage1")
 
   res_list <- .parallel_lapply(peaks, n_cores = n_cores, FUN = function(pk) {
-    hit <- which(mm[pk, ] > 0)
-    if (length(hit) < 1) return(list(pk = pk, b0 = .offset_only_b0(as.numeric(TAX$A_counts[pk, ]), off), regs = character(), coefs = numeric(), cov_names = character(), cov_coefs = numeric(), status = "no_motif"))
+    regs <- character()
+    status <- "fit"
 
-    motifs <- colnames(mm)[hit]
-    tf_sym <- sub(".*_", "", motifs)
-    regs <- unique(c(
-      intersect(paste0("RNA:", tf_sym), rownames(T)),
-      intersect(paste0("MOTIF:", motifs), rownames(T))
-    ))
-    if (length(regs) < 3) return(list(pk = pk, b0 = .offset_only_b0(as.numeric(TAX$A_counts[pk, ]), off), regs = character(), coefs = numeric(), cov_names = character(), cov_coefs = numeric(), status = "few_regs"))
+    if (!is.null(mm) && prior_mode %in% c("motif", "hybrid")) {
+      hit <- which(mm[pk, ] > 0)
+      if (length(hit) > 0) {
+        motifs <- colnames(mm)[hit]
+        tf_sym <- sub(".*_", "", motifs)
+        regs <- unique(c(
+          intersect(paste0("RNA:", tf_sym), rownames(T)),
+          intersect(paste0("MOTIF:", motifs), rownames(T))
+        ))
+      }
+    }
+
+    if (!is.null(chip_peak_map) && prior_mode %in% c("chip", "hybrid")) {
+      chip_regs <- names(chip_peak_map)[vapply(chip_peak_map, function(pks) pk %in% pks, logical(1))]
+      chip_regs <- intersect(chip_regs, rownames(T))
+      regs <- unique(c(regs, chip_regs))
+    }
+
+    min_regs <- if (prior_mode == "chip") 1 else 3
+    if (length(regs) < min_regs) {
+      status <- if (length(regs) == 0) "no_prior" else "few_regs"
+      return(list(pk = pk, b0 = .offset_only_b0(as.numeric(TAX$A_counts[pk, ]), off), regs = character(), coefs = numeric(), cov_names = character(), cov_coefs = numeric(), status = status))
+    }
 
     X <- Xm[, regs, drop=FALSE]
     pen <- rep(1, length(regs))
@@ -184,7 +220,7 @@ fit_stage1_T_to_A <- function(TAX, motif_map, peaks, lambda = 1, n_cores = 1) {
                            dimnames = list(colnames(Cm), peaks))
   }
   fitted_peaks <- 0L
-  skipped_no_motif <- 0L
+  skipped_no_prior <- 0L
   skipped_few_regs <- 0L
 
 for (x in res_list) {
@@ -193,8 +229,8 @@ for (x in res_list) {
     if (length(x$regs) > 0) W[x$regs, x$pk] <- x$coefs
     if (!is.null(Bcov) && length(x$cov_names) > 0) Bcov[x$cov_names, x$pk] <- x$cov_coefs
     fitted_peaks <- fitted_peaks + 1L
-  } else if (x$status == "no_motif") {
-    skipped_no_motif <- skipped_no_motif + 1L
+  } else if (x$status == "no_prior") {
+    skipped_no_prior <- skipped_no_prior + 1L
   } else if (x$status == "few_regs") {
     skipped_few_regs <- skipped_few_regs + 1L
   }
@@ -207,7 +243,7 @@ for (x in res_list) {
     diagnostics = list(
       total_peaks = length(peaks),
       fitted_peaks = fitted_peaks,
-      skipped_no_motif = skipped_no_motif,
+      skipped_no_prior = skipped_no_prior,
       skipped_few_regs = skipped_few_regs
     )
   )
@@ -233,13 +269,17 @@ fit_stage2_A_to_X <- function(
   motif_map = NULL,
   n_cores = 1
 ) {
-  Afeat <- TAX$A_log1p
+  Afeat <- .as_dgC(TAX$A_log1p, name = "TAX$A_log1p")
   off <- TAX$offsets$rna
   T <- TAX$T
   Xm_T <- t(T)
   C <- TAX$covariates
   Cm <- if (!is.null(C)) t(C) else NULL
   cov_names <- if (!is.null(C)) rownames(C) else character()
+
+  if (!is.data.frame(p2g_df) || !all(c("peak", "gene") %in% colnames(p2g_df))) {
+    stop("p2g_df must be a data.frame with columns peak and gene")
+  }
 
   genes <- intersect(genes, rownames(TAX$X_counts))
   if (length(genes) == 0) stop("No genes to fit in stage2")
@@ -251,7 +291,7 @@ fit_stage2_A_to_X <- function(
   mm <- NULL
   if (include_T_direct) {
     if (is.null(motif_map)) stop("motif_map required when include_T_direct=TRUE")
-    mm <- motif_map$motif_mat
+    mm <- .as_dgC(motif_map$motif_mat, name = "motif_map$motif_mat")
     if (!all(peaks_all %in% rownames(mm)) && all(peaks_all %in% colnames(mm))) mm <- t(mm)
   }
 

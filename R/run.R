@@ -9,15 +9,18 @@
 #' - Adds adaptive penalties (GWAS PIP + link strength + distance) without breaking interpretability.
 #'
 #' @param obj Seurat object (RNA+ATAC; optional chromvar assay)
-#' @param ko_regulator single re (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-
+#' @param ko_regulator single regulator in rownames(TAX$T)
 #' @param group.by metadata columns for metacell stratification
 #' @param n_cells metacell size
 #' @param genes_use genes to model (must include target genes of interest)
 #' @param tf_mode RNA/chromvar/both
 #' @param tf_genes TF genes if needed
 #' @param include_T_direct include direct regulator terms in stage2 (default FALSE)
+#' @param stage1_mode prior mode for stage1: motif/chip/hybrid
+#' @param chip_peak_map optional named list for chip/hybrid mode (regulator -> peaks)
 #' @param ko_value KO value (used by predict_virtual_ko)
+#' @param alpha KO effect strength in [0,1]; use 'auto' with alpha_grid for heuristic calibration (scale mode)
+#' @param alpha_grid optional numeric grid in [0,1]; used for auto heuristic scan/uncertainty summary
 #' @param ko_mode KO mode: 'set' or 'scale'
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
@@ -34,7 +37,11 @@ run_virtual_ko_optimized <- function(
   tf_mode = c("RNA", "chromvar", "both"),
   tf_genes = NULL,
   include_T_direct = FALSE,
+  stage1_mode = c("motif", "chip", "hybrid"),
+  chip_peak_map = NULL,
   ko_value = 0,
+  alpha = 1,
+  alpha_grid = NULL,
   ko_mode = c("set", "scale"),
   finemap_snps = NULL,
   pip_floor = 0,
@@ -47,6 +54,11 @@ run_virtual_ko_optimized <- function(
 ) {
   tf_mode <- match.arg(tf_mode)
   ko_mode <- match.arg(ko_mode)
+  stage1_mode <- match.arg(stage1_mode)
+
+  if (ko_mode == "set" && (!is.null(alpha_grid) || (is.character(alpha) && alpha == "auto") || (is.numeric(alpha) && length(alpha) == 1 && !isTRUE(all.equal(alpha, 1))))) {
+    warning("alpha/alpha_grid are only used when ko_mode='scale'; current run uses ko_mode='set'.")
+  }
 
   # ---- priors: peak2gene ----
   p2g <- get_peak2gene_links(obj, atac_assay = atac_assay)
@@ -79,15 +91,24 @@ run_virtual_ko_optimized <- function(
   # ---- metacells ----
   mc <- make_metacell_ids(obj, group.by = group.by, n_cells = n_cells, seed = seed)
 
-  # ---- motif map for stage1 ----
-  motif_map <- get_peak_motif_map(obj, atac_assay = atac_assay)
+  # ---- stage1 priors (pluggable) ----
+  stage1_prior <- build_stage1_priors(
+    obj,
+    atac_assay = atac_assay,
+    stage1_mode = stage1_mode,
+    chip_peak_map = chip_peak_map
+  )
+  motif_map <- if (!is.null(stage1_prior$motif_map)) stage1_prior$motif_map else NULL
+  if (isTRUE(include_T_direct) && is.null(motif_map)) {
+    stop("include_T_direct=TRUE requires motif priors; use stage1_mode='motif' or 'hybrid'.")
+  }
 
   # ---- extract shared T/A/X ----
   if (tf_mode %in% c("RNA", "both") && is.null(tf_genes)) {
     rna_genes <- rownames(Seurat::GetAssayData(obj, assay = rna_assay, slot = "counts"))
-    tf_from_motif <- intersect(unique(motif_map$tf_symbols), rna_genes)
+    tf_from_motif <- if (!is.null(motif_map)) intersect(unique(motif_map$tf_symbols), rna_genes) else character()
     tf_genes <- unique(c(tf_from_motif, genes_use))
-    warning("tf_genes is NULL; auto-derived RNA regulators from motifs + genes_use")
+    warning("tf_genes is NULL; auto-derived RNA regulators from available motif TFs + genes_use")
   }
 
   TAX <- extract_TAX_metacell(
@@ -110,14 +131,19 @@ run_virtual_ko_optimized <- function(
 
   # ---- lambda estimation (optional) ----
   if (is.null(lambda_A)) {
-    lambda_A <- estimate_lambda_stage1(TAX, motif_map, peaks = peaks_use, seed = seed, n_cores = n_cores)
+    if (!is.null(motif_map)) {
+      lambda_A <- estimate_lambda_stage1(TAX, motif_map, peaks = peaks_use, seed = seed, n_cores = n_cores)
+    } else {
+      lambda_A <- 1
+      warning("lambda_A fallback to 1 in chip-only stage1 mode")
+    }
   }
   if (is.null(lambda_X)) {
     lambda_X <- estimate_lambda_stage2(TAX, p2g_df = p2g, genes = genes_use, seed = seed, n_cores = n_cores)
   }
 
   # ---- fit models ----
-  fit1 <- fit_stage1_T_to_A(TAX, motif_map, peaks = peaks_use, lambda = lambda_A, n_cores = n_cores)
+  fit1 <- fit_stage1_T_to_A(TAX, stage1_prior, peaks = peaks_use, lambda = lambda_A, n_cores = n_cores)
   fit2 <- fit_stage2_A_to_X(
     TAX, p2g_df = p2g, genes = genes_use, lambda = lambda_X,
     obj = obj, atac_assay = atac_assay,
@@ -127,11 +153,54 @@ run_virtual_ko_optimized <- function(
     n_cores = n_cores
   )
 
+  # ---- alpha calibration for CRISPRi-strength alignment ----
+  alpha_used <- 1
+  alpha_scan <- NULL
+  if (ko_mode == "scale") {
+    alpha_used <- alpha
+
+    # numeric alpha: use directly; optional grid is uncertainty summary only
+    if (is.numeric(alpha_used) && length(alpha_used) == 1 && is.finite(alpha_used)) {
+      if (alpha_used < 0 || alpha_used > 1) stop("alpha must be within [0,1]")
+      if (!is.null(alpha_grid)) {
+        alpha_candidates <- unique(as.numeric(alpha_grid))
+        alpha_candidates <- alpha_candidates[is.finite(alpha_candidates) & alpha_candidates >= 0 & alpha_candidates <= 1]
+        if (length(alpha_candidates) > 0) {
+          alpha_scan <- data.frame(alpha = alpha_candidates, loss = abs(alpha_candidates - alpha_used))
+        }
+      }
+    } else if (is.character(alpha_used) && length(alpha_used) == 1 && alpha_used == "auto") {
+      alpha_candidates <- if (is.null(alpha_grid)) c(0.25, 0.5, 0.75, 1.0) else unique(as.numeric(alpha_grid))
+      alpha_candidates <- alpha_candidates[is.finite(alpha_candidates) & alpha_candidates >= 0 & alpha_candidates <= 1]
+      if (length(alpha_candidates) == 0) stop("alpha='auto' requires at least one valid alpha candidate in [0,1]")
+
+      # heuristic anchor: prefer moderate CRISPRi strength around 50% KD
+      alpha_ref <- 0.5
+      if (startsWith(ko_regulator, "RNA:") && ko_regulator %in% rownames(TAX$T)) {
+        target_pre <- mean(as.numeric(TAX$T[ko_regulator, ]))
+        target_post <- target_pre * alpha_candidates
+        loss <- abs(alpha_candidates - alpha_ref)
+        alpha_scan <- data.frame(alpha = alpha_candidates, target_pre = target_pre, target_post = target_post, loss = loss)
+      } else {
+        warning("alpha='auto' currently calibrated for RNA regulators in TAX$T; using generic heuristic anchor")
+        loss <- abs(alpha_candidates - alpha_ref)
+        alpha_scan <- data.frame(alpha = alpha_candidates, target_pre = NA_real_, target_post = NA_real_, loss = loss)
+      }
+      alpha_used <- alpha_candidates[which.min(loss)]
+    } else {
+      stop("alpha must be numeric scalar in [0,1], or use alpha='auto'")
+    }
+
+    if (!is.numeric(alpha_used) || length(alpha_used) != 1 || !is.finite(alpha_used) || alpha_used < 0 || alpha_used > 1) {
+      stop("alpha must be numeric scalar in [0,1], or use alpha='auto'/alpha_grid")
+    }
+  }
+
   # ---- predict KO ----
   pred <- predict_virtual_ko(
     TAX, fit1, fit2,
     ko_regulators = ko_regulator,
-    ko_value = ko_value,
+    ko_value = if (ko_mode == "scale") alpha_used else ko_value,
     ko_mode = ko_mode
   )
 
@@ -157,16 +226,18 @@ run_virtual_ko_optimized <- function(
       genes_use = genes_use,
       peaks_use = peaks_use,
       tf_mode = tf_mode,
+      stage1_mode = stage1_mode,
       lambda_A = lambda_A,
       lambda_X = lambda_X,
       n_cores = n_cores,
       ko_regulator = ko_regulator,
       ko_value = ko_value,
-      ko_mode = ko_mode
+      ko_mode = ko_mode,
+      alpha = alpha_used
     ),
     gwas = list(snp_peak = snp_peak, peak_weights = peak_w),
     fits = list(stage1 = fit1, stage2 = fit2),
-    diagnostics = list(stage1 = fit1$diagnostics, stage2 = fit2$diagnostics),
+    diagnostics = list(stage1 = fit1$diagnostics, stage2 = fit2$diagnostics, alpha_scan = alpha_scan),
     pred = pred,
     rank_genes = rank_genes,
     rank_peaks = rank_peaks
