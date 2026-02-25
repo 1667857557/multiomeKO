@@ -68,6 +68,13 @@
   as.integer(max(min_folds, min(max_folds, n)))
 }
 
+# enforce sparse matrix class for robust subsetting in parallel workers
+.as_dgC <- function(x, name = "object") {
+  if (!inherits(x, "Matrix")) stop(name, " must inherit from Matrix")
+  if (!inherits(x, "dgCMatrix")) x <- as(x, "dgCMatrix")
+  x
+}
+
 
 # cross-platform parallel lapply (PSOCK on all OS)
 .parallel_lapply <- function(X, FUN, n_cores = 1, seed = NULL) {
