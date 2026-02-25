@@ -10,23 +10,45 @@
 #' @param fit2 stage2 fit list(V,W_X,Bcov_X,b0_X)
 #' @param ko_regulators character vector of regulator rownames(TAX$T)
 #' @param ko_value value after KO (0 by default)
-#' @param ko_mode "set" sets regulator to ko_value; "scale" scales RNA regulators in CPM space and motif regulators linearly
+#' @param ko_mode "set" sets regulator to ko_value; "scale" scales RNA regulators in CPM space
+#' @param allow_motif_ko whether to allow perturbing MOTIF:* regulators (default FALSE)
+#' @param couple_rna_motif whether RNA:GENE KO should also perturb matching MOTIF:*_GENE rows (requires allow_motif_ko=TRUE; interpreted as proxy TF-activity perturbation, not literal KO)
 #' @return list(muA_wt, muA_cf, dA, muX_wt, muX_cf, dX)
-predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_mode = c("set", "scale")) {
+predict_virtual_ko <- function(
+  TAX, fit1, fit2,
+  ko_regulators,
+  ko_value = 0,
+  ko_mode = c("set", "scale"),
+  allow_motif_ko = FALSE,
+  couple_rna_motif = FALSE
+) {
   ko_mode <- match.arg(ko_mode)
   T <- TAX$T
-  C <- TAX$covariates
   if (!all(ko_regulators %in% rownames(T))) {
     stop("Some ko_regulators not found in TAX$T: ", paste(setdiff(ko_regulators, rownames(T)), collapse=", "))
   }
 
+  ko_rna <- intersect(ko_regulators[grepl("^RNA:", ko_regulators)], rownames(T))
+  ko_non_rna <- setdiff(ko_regulators, ko_rna)
+  ko_motif <- intersect(ko_non_rna[grepl("^MOTIF:", ko_non_rna)], rownames(T))
+
+  if (isTRUE(couple_rna_motif) && length(ko_rna) > 0) {
+    genes <- sub("^RNA:", "", ko_rna)
+    motif_rows <- rownames(T)[grepl("^MOTIF:.*_", rownames(T))]
+    motif_gene <- sub("^MOTIF:.*_", "", motif_rows)
+    coupled <- motif_rows[motif_gene %in% genes]
+    ko_motif <- unique(c(ko_motif, coupled))
+  }
+
+  if (length(ko_motif) > 0 && !isTRUE(allow_motif_ko)) {
+    stop("MOTIF perturbation is disabled by default (KO semantics). Set allow_motif_ko=TRUE before explicit or coupled motif perturbation.")
+  }
+
   T_cf <- T
   if (ko_mode == "set") {
-    T_cf[ko_regulators, ] <- ko_value
+    if (length(ko_rna) > 0) T_cf[ko_rna, ] <- ko_value
+    if (length(ko_motif) > 0) T_cf[ko_motif, ] <- ko_value
   } else {
-    ko_rna <- intersect(ko_regulators[grepl("^RNA:", ko_regulators)], rownames(T_cf))
-    ko_motif <- intersect(setdiff(ko_regulators, ko_rna), rownames(T_cf))
-
     if (length(ko_rna) > 0) {
       cpm <- expm1(T_cf[ko_rna, , drop=FALSE])
       T_cf[ko_rna, ] <- log1p(cpm * ko_value)
@@ -47,7 +69,7 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
   W_A <- fit1$W_A
   b0A <- .align_vec(fit1$b0_A, colnames(W_A))
 
-  etaA_wt <- (Matrix::t(W_A) %*% T)              # peaks x metacells
+  etaA_wt <- (Matrix::t(W_A) %*% T)
   etaA_cf <- (Matrix::t(W_A) %*% T_cf)
 
   if (!is.null(fit1$Bcov_A) && !is.null(Cm)) {
@@ -55,57 +77,32 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
     etaA_cf <- etaA_cf + (Matrix::t(fit1$Bcov_A) %*% Cm)
   }
 
-  # add intercept (recycle across columns)
   etaA_wt <- etaA_wt + b0A
   etaA_cf <- etaA_cf + b0A
 
-  # add offsets per metacell (column-wise)
-  etaA_wt <- t(t(as.matrix(etaA_wt)) + offA)
-  etaA_cf <- t(t(as.matrix(etaA_cf)) + offA)
-  etaA_wt <- .clip_eta(etaA_wt)
-  etaA_cf <- .clip_eta(etaA_cf)
-
-  etaA_wt <- .clip_eta(etaA_wt)
-  etaA_cf <- .clip_eta(etaA_cf)
-
-  etaA_wt <- .clip_eta(etaA_wt)
-  etaA_cf <- .clip_eta(etaA_cf)
-
-  etaA_wt <- .clip_eta(etaA_wt)
-  etaA_cf <- .clip_eta(etaA_cf)
-
-  etaA_wt <- .clip_eta(etaA_wt)
-  etaA_cf <- .clip_eta(etaA_cf)
-
-  etaA_wt <- .clip_eta(etaA_wt)
-  etaA_cf <- .clip_eta(etaA_cf)
+  etaA_wt <- .clip_eta(t(t(as.matrix(etaA_wt)) + offA))
+  etaA_cf <- .clip_eta(t(t(as.matrix(etaA_cf)) + offA))
 
   muA_wt <- exp(etaA_wt)
   muA_cf <- exp(etaA_cf)
-
   dA <- log1p(muA_cf) - log1p(muA_wt)
 
-  # Stage2 features: log1p(muA)
-  Afeat_wt <- log1p(muA_wt)
-  Afeat_cf <- log1p(muA_cf)
-
-  # ---- Stage2: muX = exp(b0 + V^T Afeat + W_X^T T + offset) ----
+  # ---- Stage2 features ----
+  # Jensen-aware approximation: use observed WT A_log1p from training distribution,
+  # then add Stage1-predicted delta for CF.
   V <- fit2$V
   genes <- colnames(V)
   peaks_v <- rownames(V)
-  Afeat_wt <- Afeat_wt[peaks_v, , drop=FALSE]
-  Afeat_cf <- Afeat_cf[peaks_v, , drop=FALSE]
+
+  Afeat_wt <- as.matrix(TAX$A_log1p[peaks_v, , drop=FALSE])
+  Afeat_cf <- Afeat_wt + dA[peaks_v, , drop=FALSE]
+  Afeat_cf <- pmax(0, Afeat_cf)
 
   b0X <- .align_vec(fit2$b0_X, genes)
-
-  # ensure peak order matches stage2 coefficients
-  Afeat_wt <- Afeat_wt[rownames(V), , drop=FALSE]
-  Afeat_cf <- Afeat_cf[rownames(V), , drop=FALSE]
 
   etaX_wt <- (Matrix::t(V) %*% Matrix::Matrix(Afeat_wt, sparse = FALSE))
   etaX_cf <- (Matrix::t(V) %*% Matrix::Matrix(Afeat_cf, sparse = FALSE))
 
-  # add direct regulator term if present
   if (!is.null(fit2$W_X)) {
     etaX_wt <- etaX_wt + (Matrix::t(fit2$W_X) %*% T)
     etaX_cf <- etaX_cf + (Matrix::t(fit2$W_X) %*% T_cf)
@@ -116,32 +113,11 @@ predict_virtual_ko <- function(TAX, fit1, fit2, ko_regulators, ko_value = 0, ko_
     etaX_cf <- etaX_cf + (Matrix::t(fit2$Bcov_X) %*% Cm)
   }
 
-  etaX_wt <- etaX_wt + b0X
-  etaX_cf <- etaX_cf + b0X
-
-  etaX_wt <- t(t(as.matrix(etaX_wt)) + offX)
-  etaX_cf <- t(t(as.matrix(etaX_cf)) + offX)
-  etaX_wt <- .clip_eta(etaX_wt)
-  etaX_cf <- .clip_eta(etaX_cf)
-
-  etaX_wt <- .clip_eta(etaX_wt)
-  etaX_cf <- .clip_eta(etaX_cf)
-
-  etaX_wt <- .clip_eta(etaX_wt)
-  etaX_cf <- .clip_eta(etaX_cf)
-
-  etaX_wt <- .clip_eta(etaX_wt)
-  etaX_cf <- .clip_eta(etaX_cf)
-
-  etaX_wt <- .clip_eta(etaX_wt)
-  etaX_cf <- .clip_eta(etaX_cf)
-
-  etaX_wt <- .clip_eta(etaX_wt)
-  etaX_cf <- .clip_eta(etaX_cf)
+  etaX_wt <- .clip_eta(t(t(as.matrix(etaX_wt + b0X)) + offX))
+  etaX_cf <- .clip_eta(t(t(as.matrix(etaX_cf + b0X)) + offX))
 
   muX_wt <- exp(etaX_wt)
   muX_cf <- exp(etaX_cf)
-
   dX <- log1p(muX_cf) - log1p(muX_wt)
 
   list(
