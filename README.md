@@ -175,6 +175,17 @@ top_genes <- rank_by_effect(pred$dX, top_n = 50)
 
 ---
 
+## Benchmark / Leakage Best Practices
+
+为避免 benchmark 泄漏、提升论文级可复现性，建议：
+
+- `Links()` 必须在 **NTC** 子集上计算，再固定用于 KO/条件评估。
+- HVG 与 peaks 筛选尽量在 **NTC** 上完成，避免使用 KO 信息。
+- 药物/批次/条件必须 **分层训练与评估**，禁止跨层信息泄漏。
+- 报告 `diagnostics`（含 stage1/stage2 覆盖率和 `alpha_scan`）以展示模型退化风险。
+
+---
+
 ## Dependencies
 
 Declared imports include `Matrix`, `glmnet`, `Seurat`, `Signac`, `GenomicRanges`, `IRanges`, `GenomeInfoDb`.
