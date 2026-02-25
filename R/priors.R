@@ -53,3 +53,41 @@ get_peak_motif_map <- function(obj, atac_assay = "ATAC") {
   tf_symbols <- sub(".*_", "", motif_names)
   list(motif_mat = mm, motif_names = motif_names, tf_symbols = tf_symbols)
 }
+
+
+#' Build stage1 priors with pluggable modes
+#'
+#' @param obj Seurat object
+#' @param atac_assay ATAC assay name
+#' @param stage1_mode one of "motif" (TF only), "chip" (external peak sets), "hybrid" (both)
+#' @param chip_peak_map optional named list for non-TF regulators (regulator -> peak vector)
+#' @return list with mode-specific prior maps and diagnostics
+build_stage1_priors <- function(
+  obj,
+  atac_assay = "ATAC",
+  stage1_mode = c("motif", "chip", "hybrid"),
+  chip_peak_map = NULL
+) {
+  stage1_mode <- match.arg(stage1_mode)
+  out <- list(stage1_mode = stage1_mode)
+
+  if (stage1_mode %in% c("motif", "hybrid")) {
+    out$motif_map <- get_peak_motif_map(obj, atac_assay = atac_assay)
+  }
+
+  if (stage1_mode %in% c("chip", "hybrid")) {
+    if (is.null(chip_peak_map) || !is.list(chip_peak_map) || is.null(names(chip_peak_map))) {
+      stop("chip_peak_map must be a named list(regulator -> peak character vector) for chip/hybrid mode")
+    }
+    peaks <- rownames(obj[[atac_assay]])
+    chip_peak_map <- lapply(chip_peak_map, function(pk) intersect(unique(as.character(pk)), peaks))
+    out$chip_peak_map <- chip_peak_map
+    out$chip_summary <- data.frame(
+      regulator = names(chip_peak_map),
+      n_peaks = vapply(chip_peak_map, length, integer(1)),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  out
+}
