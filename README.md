@@ -7,7 +7,7 @@ It implements a biologically constrained two-stage model:
 1. **Regulator → ATAC peaks** (stage 1)
 2. **ATAC peaks → gene expression** (stage 2)
 
-Then it applies counterfactual perturbation (KO) to predict downstream changes in accessibility and expression.
+Then it applies counterfactual perturbation (default: RNA-target KO semantics) to predict downstream changes in accessibility and expression.
 
 ---
 
@@ -27,8 +27,9 @@ Then it applies counterfactual perturbation (KO) to predict downstream changes i
   - `ko_mode = "set"` (set regulator value to a constant);
   - `ko_mode = "scale"` (scale regulator by a factor).
 - **CRISPRi 效应强度 α**:
-  - `ko_mode = "scale"` 时可用 `alpha`/`alpha_grid`;
-  - `alpha = "auto"` + `alpha_grid` 会返回 `diagnostics$alpha_scan`（当前为启发式校准）。
+  - `ko_mode = "scale"` 时可用 `alpha`；
+  - `alpha = "auto"` 需要提供外部估计 `alpha_external`（KO vs NTC）。
+  - `alpha_grid` 可用于最近网格映射并输出 `diagnostics$alpha_scan`。
 - **Diagnostics in model outputs** to track fitted/skipped peaks/genes.
 - **Cross-platform parallel acceleration** (`n_cores`) using PSOCK clusters (Linux/Windows).
 
@@ -53,7 +54,7 @@ library(multiomeKO)
 
 res <- run_virtual_ko_optimized(
   obj = multiome_obj,
-  ko_regulator = "RNA:FOXA1",              # or e.g. "MOTIF:MA0148.1_FOXA1"
+  ko_regulator = "RNA:FOXA1",
   group.by = c("celltype", "SampleID"),
   n_cells = 50,
   genes_use = c("GATA3", "ESR1", "XBP1", "FOXA1"),
@@ -64,8 +65,11 @@ res <- run_virtual_ko_optimized(
   chip_peak_map = NULL,
   ko_value = 0,
   alpha = "auto",
+  alpha_external = 0.6,                     # estimated from KO vs NTC outside training set
   alpha_grid = c(0.25, 0.5, 0.75, 1.0),
-  ko_mode = "scale",                       # alpha/alpha_grid are used in scale mode
+  allow_motif_ko = FALSE,
+  couple_rna_motif = TRUE,
+  ko_mode = "scale",
   finemap_snps = NULL,
   n_cores = 4,
   seed = 1
@@ -127,7 +131,7 @@ TAX <- extract_TAX_metacell(
   peaks_use = unique(p2g$peak),
   tf_mode = "both",
   tf_genes = c("FOXA1", "GATA3", "ESR1"),
-  covariates = c("nCount_RNA", "nCount_ATAC")
+  covariates = NULL
 )
 
 # 4) regularization
@@ -160,6 +164,8 @@ top_genes <- rank_by_effect(pred$dX, top_n = 50)
 - Prefer biologically meaningful `genes_use` for targeted modeling.
 - Check `res$diagnostics` to confirm sufficient fitted coverage.
 - Compare results across different metacell seeds/sizes for stability.
+- MOTIF:* 默认仅作状态特征；如需 motif 扰动请显式设 `allow_motif_ko = TRUE` 并解释其非 KO 语义。
+- 默认 `covariates = NULL` 以避免与 offset 的深度双重校正；只建议传入非深度混杂项。
 - 对于非 TF KO，可切换 `stage1_mode = "chip"` 或 `"hybrid"` 并提供 `chip_peak_map`。
 
 ---

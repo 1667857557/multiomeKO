@@ -16,11 +16,15 @@
 #' @param tf_mode RNA/chromvar/both
 #' @param tf_genes TF genes if needed
 #' @param include_T_direct include direct regulator terms in stage2 (default FALSE)
+#' @param covariates optional metadata covariates to aggregate; default NULL (avoid depth double-correction)
 #' @param stage1_mode prior mode for stage1: motif/chip/hybrid
 #' @param chip_peak_map optional named list for chip/hybrid mode (regulator -> peaks)
 #' @param ko_value KO value (used by predict_virtual_ko)
-#' @param alpha KO effect strength in [0,1]; use 'auto' with alpha_grid for heuristic calibration (scale mode)
-#' @param alpha_grid optional numeric grid in [0,1]; used for auto heuristic scan/uncertainty summary
+#' @param alpha KO effect strength in [0,1]; or 'auto' using externally estimated knockdown fraction
+#' @param alpha_grid optional numeric grid in [0,1] to report uncertainty / nearest-grid alpha
+#' @param alpha_external optional externally estimated knockdown fraction in [0,1] for alpha='auto'
+#' @param allow_motif_ko whether to allow perturbing MOTIF:* regulators (default FALSE)
+#' @param couple_rna_motif whether to synchronize RNA KO to matching MOTIF features
 #' @param ko_mode KO mode: 'set' or 'scale'
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
@@ -37,11 +41,15 @@ run_virtual_ko_optimized <- function(
   tf_mode = c("RNA", "chromvar", "both"),
   tf_genes = NULL,
   include_T_direct = FALSE,
+  covariates = NULL,
   stage1_mode = c("motif", "chip", "hybrid"),
   chip_peak_map = NULL,
   ko_value = 0,
   alpha = 1,
   alpha_grid = NULL,
+  alpha_external = NULL,
+  allow_motif_ko = FALSE,
+  couple_rna_motif = TRUE,
   ko_mode = c("set", "scale"),
   finemap_snps = NULL,
   pip_floor = 0,
@@ -55,6 +63,10 @@ run_virtual_ko_optimized <- function(
   tf_mode <- match.arg(tf_mode)
   ko_mode <- match.arg(ko_mode)
   stage1_mode <- match.arg(stage1_mode)
+
+  if (!startsWith(ko_regulator, "RNA:") && !isTRUE(allow_motif_ko)) {
+    stop("KO semantics are restricted to RNA:* by default. For motif perturbation, set allow_motif_ko=TRUE.")
+  }
 
   if (ko_mode == "set" && (!is.null(alpha_grid) || (is.character(alpha) && alpha == "auto") || (is.numeric(alpha) && length(alpha) == 1 && !isTRUE(all.equal(alpha, 1))))) {
     warning("alpha/alpha_grid are only used when ko_mode='scale'; current run uses ko_mode='set'.")
@@ -120,7 +132,7 @@ run_virtual_ko_optimized <- function(
     peaks_use = peaks_use,
     tf_mode = tf_mode,
     tf_genes = tf_genes,
-    covariates = c("nCount_RNA", "nCount_ATAC")
+    covariates = covariates
   )
 
   if (!(ko_regulator %in% rownames(TAX$T))) {
@@ -157,42 +169,30 @@ run_virtual_ko_optimized <- function(
   alpha_used <- 1
   alpha_scan <- NULL
   if (ko_mode == "scale") {
-    alpha_used <- alpha
-
-    # numeric alpha: use directly; optional grid is uncertainty summary only
-    if (is.numeric(alpha_used) && length(alpha_used) == 1 && is.finite(alpha_used)) {
+    if (is.numeric(alpha) && length(alpha) == 1 && is.finite(alpha)) {
+      alpha_used <- alpha
       if (alpha_used < 0 || alpha_used > 1) stop("alpha must be within [0,1]")
       if (!is.null(alpha_grid)) {
-        alpha_candidates <- unique(as.numeric(alpha_grid))
-        alpha_candidates <- alpha_candidates[is.finite(alpha_candidates) & alpha_candidates >= 0 & alpha_candidates <= 1]
-        if (length(alpha_candidates) > 0) {
-          alpha_scan <- data.frame(alpha = alpha_candidates, loss = abs(alpha_candidates - alpha_used))
+        a <- unique(as.numeric(alpha_grid))
+        a <- a[is.finite(a) & a >= 0 & a <= 1]
+        if (length(a) > 0) alpha_scan <- data.frame(alpha = a, loss = abs(a - alpha_used))
+      }
+    } else if (is.character(alpha) && length(alpha) == 1 && alpha == "auto") {
+      if (is.null(alpha_external) || !is.numeric(alpha_external) || length(alpha_external) != 1 || !is.finite(alpha_external)) {
+        stop("alpha='auto' requires alpha_external (externally estimated knockdown fraction in [0,1])")
+      }
+      if (alpha_external < 0 || alpha_external > 1) stop("alpha_external must be within [0,1]")
+      alpha_used <- alpha_external
+      if (!is.null(alpha_grid)) {
+        a <- unique(as.numeric(alpha_grid))
+        a <- a[is.finite(a) & a >= 0 & a <= 1]
+        if (length(a) > 0) {
+          alpha_scan <- data.frame(alpha = a, loss = abs(a - alpha_external))
+          alpha_used <- a[which.min(abs(a - alpha_external))]
         }
       }
-    } else if (is.character(alpha_used) && length(alpha_used) == 1 && alpha_used == "auto") {
-      alpha_candidates <- if (is.null(alpha_grid)) c(0.25, 0.5, 0.75, 1.0) else unique(as.numeric(alpha_grid))
-      alpha_candidates <- alpha_candidates[is.finite(alpha_candidates) & alpha_candidates >= 0 & alpha_candidates <= 1]
-      if (length(alpha_candidates) == 0) stop("alpha='auto' requires at least one valid alpha candidate in [0,1]")
-
-      # heuristic anchor: prefer moderate CRISPRi strength around 50% KD
-      alpha_ref <- 0.5
-      if (startsWith(ko_regulator, "RNA:") && ko_regulator %in% rownames(TAX$T)) {
-        target_pre <- mean(as.numeric(TAX$T[ko_regulator, ]))
-        target_post <- target_pre * alpha_candidates
-        loss <- abs(alpha_candidates - alpha_ref)
-        alpha_scan <- data.frame(alpha = alpha_candidates, target_pre = target_pre, target_post = target_post, loss = loss)
-      } else {
-        warning("alpha='auto' currently calibrated for RNA regulators in TAX$T; using generic heuristic anchor")
-        loss <- abs(alpha_candidates - alpha_ref)
-        alpha_scan <- data.frame(alpha = alpha_candidates, target_pre = NA_real_, target_post = NA_real_, loss = loss)
-      }
-      alpha_used <- alpha_candidates[which.min(loss)]
     } else {
-      stop("alpha must be numeric scalar in [0,1], or use alpha='auto'")
-    }
-
-    if (!is.numeric(alpha_used) || length(alpha_used) != 1 || !is.finite(alpha_used) || alpha_used < 0 || alpha_used > 1) {
-      stop("alpha must be numeric scalar in [0,1], or use alpha='auto'/alpha_grid")
+      stop("alpha must be numeric scalar in [0,1], or use alpha='auto' with alpha_external")
     }
   }
 
@@ -201,7 +201,9 @@ run_virtual_ko_optimized <- function(
     TAX, fit1, fit2,
     ko_regulators = ko_regulator,
     ko_value = if (ko_mode == "scale") alpha_used else ko_value,
-    ko_mode = ko_mode
+    ko_mode = ko_mode,
+    allow_motif_ko = allow_motif_ko,
+    couple_rna_motif = couple_rna_motif
   )
 
   rank_genes <- rank_by_effect(pred$dX, top_n = 100)
@@ -226,6 +228,7 @@ run_virtual_ko_optimized <- function(
       genes_use = genes_use,
       peaks_use = peaks_use,
       tf_mode = tf_mode,
+      covariates = covariates,
       stage1_mode = stage1_mode,
       lambda_A = lambda_A,
       lambda_X = lambda_X,
@@ -233,6 +236,8 @@ run_virtual_ko_optimized <- function(
       ko_regulator = ko_regulator,
       ko_value = ko_value,
       ko_mode = ko_mode,
+      allow_motif_ko = allow_motif_ko,
+      couple_rna_motif = couple_rna_motif,
       alpha = alpha_used
     ),
     gwas = list(snp_peak = snp_peak, peak_weights = peak_w),
