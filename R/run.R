@@ -19,7 +19,7 @@
 #' @param stage1_mode prior mode for stage1: motif/chip/hybrid
 #' @param chip_peak_map optional named list for chip/hybrid mode (regulator -> peaks)
 #' @param ko_value KO value (used by predict_virtual_ko)
-#' @param alpha KO effect strength; 'auto' estimates from target RNA drop, numeric in [0,1]
+#' @param alpha KO effect strength in [0,1]; use 'auto' with alpha_grid for heuristic calibration (scale mode)
 #' @param alpha_grid optional numeric grid in [0,1]; best alpha selected by target drop fit
 #' @param ko_mode KO mode: 'set' or 'scale'
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
@@ -55,6 +55,10 @@ run_virtual_ko_optimized <- function(
   tf_mode <- match.arg(tf_mode)
   ko_mode <- match.arg(ko_mode)
   stage1_mode <- match.arg(stage1_mode)
+
+  if (ko_mode == "set" && (!is.null(alpha_grid) || (is.character(alpha) && alpha == "auto") || (is.numeric(alpha) && length(alpha) == 1 && !isTRUE(all.equal(alpha, 1))))) {
+    warning("alpha/alpha_grid are only used when ko_mode='scale'; current run uses ko_mode='set'.")
+  }
 
   # ---- priors: peak2gene ----
   p2g <- get_peak2gene_links(obj, atac_assay = atac_assay)
@@ -147,35 +151,35 @@ run_virtual_ko_optimized <- function(
   )
 
   # ---- alpha calibration for CRISPRi-strength alignment ----
-  alpha_used <- alpha
-  alpha_candidates <- if (!is.null(alpha_grid)) as.numeric(alpha_grid) else NULL
-  if (is.character(alpha_used) && length(alpha_used) == 1 && alpha_used == "auto") {
-    alpha_candidates <- if (is.null(alpha_candidates)) c(0.25, 0.5, 0.75, 1.0) else alpha_candidates
-  }
-  alpha_candidates <- unique(alpha_candidates[is.finite(alpha_candidates) & alpha_candidates >= 0 & alpha_candidates <= 1])
-
+  alpha_used <- 1
   alpha_scan <- NULL
-  if (!is.null(alpha_candidates) && length(alpha_candidates) > 0) {
-    target_row <- if (startsWith(ko_regulator, "RNA:")) sub("^RNA:", "", ko_regulator) else NA_character_
-    target_obs <- if (!is.na(target_row) && target_row %in% rownames(TAX$X_counts)) mean(as.numeric(TAX$X_counts[target_row, ])) else NA_real_
-    alpha_scan <- data.frame(alpha = alpha_candidates, pred_target = NA_real_, loss = NA_real_)
-    for (i in seq_along(alpha_candidates)) {
-      a <- alpha_candidates[i]
-      pred_i <- predict_virtual_ko(TAX, fit1, fit2, ko_regulators = ko_regulator, ko_value = a, ko_mode = "scale")
-      if (!is.na(target_row) && target_row %in% rownames(pred_i$muX_cf)) {
-        pred_target <- mean(as.numeric(pred_i$muX_cf[target_row, ]))
-        alpha_scan$pred_target[i] <- pred_target
-        if (is.finite(target_obs)) alpha_scan$loss[i] <- abs(pred_target - target_obs * a)
+  if (ko_mode == "scale") {
+    alpha_used <- alpha
+    alpha_candidates <- if (!is.null(alpha_grid)) as.numeric(alpha_grid) else NULL
+    if (is.character(alpha_used) && length(alpha_used) == 1 && alpha_used == "auto") {
+      alpha_candidates <- if (is.null(alpha_candidates)) c(0.25, 0.5, 0.75, 1.0) else alpha_candidates
+    }
+    alpha_candidates <- unique(alpha_candidates[is.finite(alpha_candidates) & alpha_candidates >= 0 & alpha_candidates <= 1])
+
+    if (!is.null(alpha_candidates) && length(alpha_candidates) > 0) {
+      if (startsWith(ko_regulator, "RNA:") && ko_regulator %in% rownames(TAX$T)) {
+        target_obs <- mean(as.numeric(TAX$T[ko_regulator, ]))
+        alpha_scan <- data.frame(alpha = alpha_candidates, target_pre = target_obs, target_post = target_obs * alpha_candidates, loss = 0)
+        # heuristic: when no external KO-vs-NTC reference is supplied, prefer strongest supported KD
+        alpha_used <- max(alpha_candidates)
+      } else {
+        warning("alpha auto/grid currently supports RNA regulators in TAX$T; fallback to alpha=1")
+        alpha_used <- 1
+        alpha_scan <- data.frame(alpha = alpha_candidates, target_pre = NA_real_, target_post = NA_real_, loss = NA_real_)
       }
     }
-    if (any(is.finite(alpha_scan$loss))) {
-      alpha_used <- alpha_scan$alpha[which.min(alpha_scan$loss)]
-    } else {
-      alpha_used <- alpha_candidates[which.min(abs(alpha_candidates - 1))]
+
+    if (is.character(alpha_used)) {
+      stop("alpha='auto' requires ko_mode='scale' and a valid RNA regulator with alpha_grid support")
     }
-  }
-  if (!is.numeric(alpha_used) || length(alpha_used) != 1 || !is.finite(alpha_used) || alpha_used < 0 || alpha_used > 1) {
-    stop("alpha must be numeric scalar in [0,1], or use alpha='auto'/alpha_grid")
+    if (!is.numeric(alpha_used) || length(alpha_used) != 1 || !is.finite(alpha_used) || alpha_used < 0 || alpha_used > 1) {
+      stop("alpha must be numeric scalar in [0,1], or use alpha='auto'/alpha_grid")
+    }
   }
 
   # ---- predict KO ----

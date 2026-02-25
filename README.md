@@ -27,8 +27,8 @@ Then it applies counterfactual perturbation (KO) to predict downstream changes i
   - `ko_mode = "set"` (set regulator value to a constant);
   - `ko_mode = "scale"` (scale regulator by a factor).
 - **CRISPRi 效应强度 α**:
-  - `alpha = "auto"` 自动估计，或
-  - `alpha_grid = c(0.25,0.5,0.75,1.0)` 自动网格并返回 `diagnostics$alpha_scan`。
+  - `ko_mode = "scale"` 时可用 `alpha`/`alpha_grid`;
+  - `alpha = "auto"` + `alpha_grid` 会返回 `diagnostics$alpha_scan`（当前为启发式校准）。
 - **Diagnostics in model outputs** to track fitted/skipped peaks/genes.
 - **Cross-platform parallel acceleration** (`n_cores`) using PSOCK clusters (Linux/Windows).
 
@@ -65,7 +65,7 @@ res <- run_virtual_ko_optimized(
   ko_value = 0,
   alpha = "auto",
   alpha_grid = c(0.25, 0.5, 0.75, 1.0),
-  ko_mode = "set",                         # or "scale"
+  ko_mode = "scale",                       # alpha/alpha_grid are used in scale mode
   finemap_snps = NULL,
   n_cores = 4,
   seed = 1
@@ -106,7 +106,8 @@ library(multiomeKO)
 
 # 1) priors
 p2g <- get_peak2gene_links(multiome_obj, atac_assay = "ATAC")
-motif_map <- get_peak_motif_map(multiome_obj, atac_assay = "ATAC")
+stage1_prior <- build_stage1_priors(multiome_obj, atac_assay = "ATAC", stage1_mode = "motif")
+motif_map <- stage1_prior$motif_map
 
 # 2) metacells
 mc <- make_metacell_ids(
@@ -134,7 +135,7 @@ lambda_A <- estimate_lambda_stage1(TAX, motif_map, peaks = unique(p2g$peak), see
 lambda_X <- estimate_lambda_stage2(TAX, p2g_df = p2g, genes = unique(p2g$gene), seed = 1, n_cores = 4)
 
 # 5) fit models
-fit1 <- fit_stage1_T_to_A(TAX, motif_map, peaks = unique(p2g$peak), lambda = lambda_A, n_cores = 4)
+fit1 <- fit_stage1_T_to_A(TAX, stage1_prior, peaks = unique(p2g$peak), lambda = lambda_A, n_cores = 4)
 fit2 <- fit_stage2_A_to_X(
   TAX, p2g_df = p2g, genes = unique(p2g$gene), lambda = lambda_X,
   obj = multiome_obj, atac_assay = "ATAC", n_cores = 4
@@ -159,6 +160,18 @@ top_genes <- rank_by_effect(pred$dX, top_n = 50)
 - Prefer biologically meaningful `genes_use` for targeted modeling.
 - Check `res$diagnostics` to confirm sufficient fitted coverage.
 - Compare results across different metacell seeds/sizes for stability.
+- 对于非 TF KO，可切换 `stage1_mode = "chip"` 或 `"hybrid"` 并提供 `chip_peak_map`。
+
+---
+
+## Benchmark / Leakage Best Practices
+
+为避免 benchmark 泄漏、提升论文级可复现性，建议：
+
+- `Links()` 必须在 **NTC** 子集上计算，再固定用于 KO/条件评估。
+- HVG 与 peaks 筛选尽量在 **NTC** 上完成，避免使用 KO 信息。
+- 药物/批次/条件必须 **分层训练与评估**，禁止跨层信息泄漏。
+- 报告 `diagnostics`（含 stage1/stage2 覆盖率和 `alpha_scan`）以展示模型退化风险。
 
 ---
 
