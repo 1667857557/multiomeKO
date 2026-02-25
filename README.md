@@ -47,6 +47,13 @@ A Seurat object with:
 - motif data available for ATAC assay (`Signac::GetMotifData`)
 - optionally chromVAR assay (if `tf_mode` includes `chromvar`)
 
+
+### KO semantics (important for interpretation)
+
+- 默认 `ko_regulator` 应为 `RNA:GENE`，表示 **gene-level knockdown proxy**。
+- `MOTIF:*` 默认不允许作为 KO 靶点（需 `allow_motif_ko = TRUE`）。
+- 若开启 `couple_rna_motif = TRUE`，这是把 RNA KO 同步投影到 motif 特征上的 **proxy TF activity perturbation**，不是“真实 motif KO”。
+
 ### One-call execution
 
 ```r
@@ -68,7 +75,7 @@ res <- run_virtual_ko_optimized(
   alpha_external = 0.6,                     # estimated from KO vs NTC outside training set
   alpha_grid = c(0.25, 0.5, 0.75, 1.0),
   allow_motif_ko = FALSE,
-  couple_rna_motif = TRUE,
+  couple_rna_motif = FALSE,
   ko_mode = "scale",
   finemap_snps = NULL,
   n_cores = 4,
@@ -165,6 +172,7 @@ top_genes <- rank_by_effect(pred$dX, top_n = 50)
 - Check `res$diagnostics` to confirm sufficient fitted coverage.
 - Compare results across different metacell seeds/sizes for stability.
 - MOTIF:* 默认仅作状态特征；如需 motif 扰动请显式设 `allow_motif_ko = TRUE` 并解释其非 KO 语义。
+- `couple_rna_motif` 默认关闭；若开启需同时设置 `allow_motif_ko = TRUE`。
 - 默认 `covariates = NULL` 以避免与 offset 的深度双重校正；只建议传入非深度混杂项。
 - 对于非 TF KO，可切换 `stage1_mode = "chip"` 或 `"hybrid"` 并提供 `chip_peak_map`。
 

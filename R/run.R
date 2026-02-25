@@ -24,7 +24,7 @@
 #' @param alpha_grid optional numeric grid in [0,1] to report uncertainty / nearest-grid alpha
 #' @param alpha_external optional externally estimated knockdown fraction in [0,1] for alpha='auto'
 #' @param allow_motif_ko whether to allow perturbing MOTIF:* regulators (default FALSE)
-#' @param couple_rna_motif whether to synchronize RNA KO to matching MOTIF features
+#' @param couple_rna_motif whether to synchronize RNA KO to matching MOTIF features (requires allow_motif_ko=TRUE; proxy TF-activity coupling)
 #' @param ko_mode KO mode: 'set' or 'scale'
 #' @param finemap_snps NULL, data.frame(chr,pos,pip), GRanges, or path
 #' @param pip_floor minimum PIP
@@ -49,7 +49,7 @@ run_virtual_ko_optimized <- function(
   alpha_grid = NULL,
   alpha_external = NULL,
   allow_motif_ko = FALSE,
-  couple_rna_motif = TRUE,
+  couple_rna_motif = FALSE,
   ko_mode = c("set", "scale"),
   finemap_snps = NULL,
   pip_floor = 0,
@@ -66,6 +66,9 @@ run_virtual_ko_optimized <- function(
 
   if (!startsWith(ko_regulator, "RNA:") && !isTRUE(allow_motif_ko)) {
     stop("KO semantics are restricted to RNA:* by default. For motif perturbation, set allow_motif_ko=TRUE.")
+  }
+  if (isTRUE(couple_rna_motif) && !isTRUE(allow_motif_ko)) {
+    stop("couple_rna_motif=TRUE requires allow_motif_ko=TRUE.")
   }
 
   if (ko_mode == "set" && (!is.null(alpha_grid) || (is.character(alpha) && alpha == "auto") || (is.numeric(alpha) && length(alpha) == 1 && !isTRUE(all.equal(alpha, 1))))) {

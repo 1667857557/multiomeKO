@@ -12,7 +12,7 @@
 #' @param ko_value value after KO (0 by default)
 #' @param ko_mode "set" sets regulator to ko_value; "scale" scales RNA regulators in CPM space
 #' @param allow_motif_ko whether to allow perturbing MOTIF:* regulators (default FALSE)
-#' @param couple_rna_motif whether RNA:GENE KO should also perturb matching MOTIF:*_GENE rows
+#' @param couple_rna_motif whether RNA:GENE KO should also perturb matching MOTIF:*_GENE rows (requires allow_motif_ko=TRUE; interpreted as proxy TF-activity perturbation, not literal KO)
 #' @return list(muA_wt, muA_cf, dA, muX_wt, muX_cf, dX)
 predict_virtual_ko <- function(
   TAX, fit1, fit2,
@@ -32,16 +32,16 @@ predict_virtual_ko <- function(
   ko_non_rna <- setdiff(ko_regulators, ko_rna)
   ko_motif <- intersect(ko_non_rna[grepl("^MOTIF:", ko_non_rna)], rownames(T))
 
-  if (length(ko_motif) > 0 && !isTRUE(allow_motif_ko)) {
-    stop("MOTIF perturbation is disabled by default (KO semantics). Use RNA:* regulators or set allow_motif_ko=TRUE.")
-  }
-
   if (isTRUE(couple_rna_motif) && length(ko_rna) > 0) {
     genes <- sub("^RNA:", "", ko_rna)
     motif_rows <- rownames(T)[grepl("^MOTIF:.*_", rownames(T))]
     motif_gene <- sub("^MOTIF:.*_", "", motif_rows)
     coupled <- motif_rows[motif_gene %in% genes]
     ko_motif <- unique(c(ko_motif, coupled))
+  }
+
+  if (length(ko_motif) > 0 && !isTRUE(allow_motif_ko)) {
+    stop("MOTIF perturbation is disabled by default (KO semantics). Set allow_motif_ko=TRUE before explicit or coupled motif perturbation.")
   }
 
   T_cf <- T
@@ -96,6 +96,7 @@ predict_virtual_ko <- function(
 
   Afeat_wt <- as.matrix(TAX$A_log1p[peaks_v, , drop=FALSE])
   Afeat_cf <- Afeat_wt + dA[peaks_v, , drop=FALSE]
+  Afeat_cf <- pmax(0, Afeat_cf)
 
   b0X <- .align_vec(fit2$b0_X, genes)
 
